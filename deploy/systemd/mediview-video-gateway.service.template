@@ -1,0 +1,16 @@
+[Unit]
+Description=MediView video gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{APP_DIR}}/frontend/mediview-portal
+EnvironmentFile={{APP_DIR}}/frontend/mediview-portal/server/video-gateway/.env
+ExecStart=/usr/bin/env node server/video-gateway/server.mjs
+Restart=always
+RestartSec=3
+User={{APP_USER}}
+
+[Install]
+WantedBy=multi-user.target

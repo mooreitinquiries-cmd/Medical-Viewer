@@ -1,0 +1,120 @@
+limit_req_zone $binary_remote_addr zone=mapdr_api:10m rate=30r/s;
+limit_req_zone $binary_remote_addr zone=mapdr_auth:10m rate=5r/s;
+
+server {
+  listen {{NGINX_LISTEN}};
+  server_name {{PUBLIC_HOST}};
+
+  client_max_body_size 4096m;
+
+  location / {
+    proxy_pass http://127.0.0.1:{{FRONTEND_PORT}};
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+  }
+
+  location /api/ {
+    proxy_pass http://127.0.0.1:{{API_PORT}}/api/;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_connect_timeout 60s;
+    proxy_send_timeout 600s;
+    proxy_read_timeout 600s;
+    limit_req zone=mapdr_api burst=120 nodelay;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location /auth-api/ {
+    proxy_pass http://127.0.0.1:{{AUTH_API_PORT}}/;
+    proxy_http_version 1.1;
+    limit_req zone=mapdr_auth burst=30 nodelay;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location /video-api/ {
+    proxy_pass http://127.0.0.1:{{VIDEO_GATEWAY_PORT}}/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location ^~ /viewer/ {
+    proxy_pass http://127.0.0.1:{{OHIF_PORT}}/viewer/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location ^~ /orthanc/ {
+    proxy_pass http://127.0.0.1:{{OHIF_PORT}}/orthanc/;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location ^~ /dicom-web/ {
+    proxy_pass http://127.0.0.1:{{OHIF_PORT}}/orthanc/dicom-web/;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location ^~ /wado {
+    proxy_pass http://127.0.0.1:{{OHIF_PORT}}/orthanc/wado;
+    proxy_http_version 1.1;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location ^~ /assets/ {
+    proxy_pass http://127.0.0.1:{{OHIF_PORT}}/assets/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+
+  location ~ ^/(app-config\.js|init-service-worker\.js|manifest\.json|logo\.png|[0-9]+\.[^/]+\.(?:css|js)|app\.[^/]+\.(?:css|js)|vendors~app\.bundle\.[^/]+\.js)$ {
+    proxy_pass http://127.0.0.1:{{OHIF_PORT}}$request_uri;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto {{PUBLIC_SCHEME}};
+  }
+}

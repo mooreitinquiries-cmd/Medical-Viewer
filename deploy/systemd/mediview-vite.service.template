@@ -1,0 +1,16 @@
+[Unit]
+Description=MediView frontend Vite server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{APP_DIR}}/frontend/mediview-portal
+EnvironmentFile={{APP_DIR}}/frontend/mediview-portal/.env
+ExecStart=/usr/bin/env npm run dev:vite -- --host 127.0.0.1 --port {{FRONTEND_PORT}} --strictPort
+Restart=always
+RestartSec=3
+User={{APP_USER}}
+
+[Install]
+WantedBy=multi-user.target

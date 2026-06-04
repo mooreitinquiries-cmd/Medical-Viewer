@@ -1,0 +1,32 @@
+services:
+  pacs:
+    container_name: orthanc
+    image: jodogne/orthanc-plugins
+    ports:
+      - 127.0.0.1:${ORTHANC_HTTP_PORT:-8042}:8042
+      - ${DICOM_BIND_IP:-0.0.0.0}:${DICOM_PORT:-4242}:4242
+    volumes:
+      - ./orthanc.json:/etc/orthanc/orthanc.json:ro
+      - ./orthanc_db:/var/lib/orthanc/db/
+    restart: always
+    networks:
+      - pacs
+
+  ohif_viewer:
+    container_name: ohif
+    image: ohif/viewer
+    ports:
+      - 127.0.0.1:${OHIF_PORT:-3000}:80
+    environment:
+      - APP_CONFIG:/usr/share/nginx/html/app-config.js
+    volumes:
+      - ./nginx_ohif.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./ohif.js:/usr/share/nginx/html/app-config.js:ro
+      - ./logo.png:/usr/share/nginx/html/logo.png:ro
+    restart: always
+    networks:
+      - pacs
+
+networks:
+  pacs:
+    external: true

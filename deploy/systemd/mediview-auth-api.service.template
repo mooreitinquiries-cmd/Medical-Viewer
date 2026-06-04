@@ -1,0 +1,16 @@
+[Unit]
+Description=MediView auth API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{APP_DIR}}/frontend/mediview-portal
+EnvironmentFile={{APP_DIR}}/frontend/mediview-portal/server/auth-api/.env
+ExecStart=/usr/bin/env node server/auth-api/server.mjs
+Restart=always
+RestartSec=3
+User={{APP_USER}}
+
+[Install]
+WantedBy=multi-user.target

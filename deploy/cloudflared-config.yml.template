@@ -1,0 +1,7 @@
+tunnel: {{CLOUDFLARED_TUNNEL_ID}}
+credentials-file: /etc/cloudflared/{{CLOUDFLARED_TUNNEL_ID}}.json
+
+ingress:
+  - hostname: {{PUBLIC_HOST}}
+    service: http://127.0.0.1:{{NGINX_LISTEN}}
+  - service: http_status:404

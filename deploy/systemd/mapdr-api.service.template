@@ -1,0 +1,16 @@
+[Unit]
+Description=MapDR API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{APP_DIR}}/mapdr-api
+EnvironmentFile={{APP_DIR}}/mapdr-api/.env
+ExecStart=/usr/bin/env node {{APP_DIR}}/mapdr-api/server.js
+Restart=always
+RestartSec=3
+User={{APP_USER}}
+
+[Install]
+WantedBy=multi-user.target

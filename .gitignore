@@ -1,0 +1,46 @@
+# Dependencies
+node_modules/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Runtime state and generated data
+docker/ohif-orthanc/orthanc_db/
+docker/ohif-orthanc/orthanc.json
+!docker/ohif-orthanc/orthanc.json.example
+mapdr-api/tmp/
+mapdr-api/uploads/
+mapdr-api/media/
+mapdr-api/*.json
+!mapdr-api/package.json
+!mapdr-api/package-lock.json
+*.codex-backup*
+*.save
+
+# Auth service local database
+frontend/mediview-portal/server/auth-api/data/
+
+# Video gateway local env
+frontend/mediview-portal/server/video-gateway/.env
+frontend/mediview-portal/infra/video/livekit.yaml
+!frontend/mediview-portal/infra/video/livekit.yaml.example
+deploy/env
+
+# Build outputs
+dist/
+build/
+coverage/
+__pycache__/
+*.py[cod]
+*.log
+
+# OS/editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Machine-local SSH material
+.ssh
+.ssh.pub

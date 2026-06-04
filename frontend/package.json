@@ -1,0 +1,11 @@
+{
+  "name": "frontend",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix ./mediview-portal run dev",
+    "build": "npm --prefix ./mediview-portal run build",
+    "lint": "npm --prefix ./mediview-portal run lint",
+    "test": "npm --prefix ./mediview-portal run test",
+    "preview": "npm --prefix ./mediview-portal run preview"
+  }
+}

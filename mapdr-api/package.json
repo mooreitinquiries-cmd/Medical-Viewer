@@ -1,0 +1,36 @@
+{
+  "name": "mapdr-api",
+  "version": "1.1.0",
+  "description": "MapDR backend API for study management, DICOM ingestion, and media exports",
+  "main": "server.js",
+  "scripts": {
+    "dev": "NODE_ENV=development node server.js",
+    "start": "NODE_ENV=production node server.js",
+    "check": "node --check server.js",
+    "smoke": "node scripts/smoke.js",
+    "test:case-stream-layouts": "node scripts/test-case-stream-job-layouts.js",
+    "test:case-stream-presentation": "node scripts/test-case-stream-presentation.js",
+    "test:case-stream-image-quality": "node scripts/test-case-stream-image-quality.js",
+    "test:recording-timestamps": "node scripts/test-recording-timestamp-preservation.js",
+    "test:upload-throughput": "node scripts/test-upload-throughput-config.js",
+    "test:integration:upload": "node scripts/integration-upload.js",
+    "worker:live-finalize": "node enterprise/queue/live-finalize-worker.js",
+    "test:integration:upload:curl": "bash scripts/integration-upload-curl.sh"
+  },
+  "keywords": [
+    "dicom",
+    "orthanc",
+    "express",
+    "healthcare"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.6",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "form-data": "^4.0.5",
+    "multer": "^2.1.1",
+    "pg": "^8.16.3"
+  }
+}
