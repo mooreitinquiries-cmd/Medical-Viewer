@@ -7,9 +7,23 @@ export interface AuthUser {
   name: string;
   role: AccountRole;
   status: AccountStatus;
+  isSuperAdmin?: boolean;
   twoFactorEnabled: boolean;
+  twoFactor?: TwoFactorStatus;
+  whiteLabelAccountIds?: string[];
+  primaryWhiteLabelAccountId?: string | null;
   createdAt: string;
   lastLoginAt: string | null;
+}
+
+export interface TwoFactorStatus {
+  available: boolean;
+  configured: boolean;
+  enabled: boolean;
+  verified: boolean;
+  method: string;
+  email: string;
+  lastChallengeAt: string | null;
 }
 
 export const ALL_ROLES: AccountRole[] = ['admin', 'doctor', 'patient', 'clinic'];

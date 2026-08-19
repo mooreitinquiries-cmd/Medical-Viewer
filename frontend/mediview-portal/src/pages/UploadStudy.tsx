@@ -6,6 +6,7 @@ import {
   preconvertDicomFiles,
   startLiveCase,
   stopLiveCase,
+  addStudyReport,
   uploadCaseRecording,
   uploadLiveCaseRecording,
   uploadStudy,
@@ -16,17 +17,27 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Progress } from '@/components/ui/progress';
 import { Slider } from '@/components/ui/slider';
-import { Upload, FileVideo, FileImage, FileText, X, Wand2, MonitorPlay, Square } from 'lucide-react';
+import { Upload, FileVideo, FileImage, FileText, X, Wand2, MonitorPlay, Square, Paperclip } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/context/AuthContext';
+import { listCareClients, type CareClient } from '@/lib/careApi';
 import { formatVideoTime } from '@/lib/timeFormat';
+import { openStudySignoffPopup } from '@/lib/studySignoff';
+import { showErrorToast } from '@/lib/errorToast';
 
 const MODALITIES = ['CT', 'MR', 'US', 'XR', 'PT', 'MG', 'CR', 'DX', 'NM', 'RF'];
-const DICOM_EXTENSIONS = ['.dcm', '.dicom', '.ima', '.dicm', '.jp2', '.j2k', '.jpf', '.jpx'];
+const DICOM_EXTENSIONS = ['.dcm', '.dicom', '.ima', '.dicm', '.jp2', '.j2k', '.jpf', '.jpx', '.j2c'];
 const MIN_TRIM_GAP_SEC = 0.1;
+const WORKFLOW_TIMEOUT_MS = 3 * 60 * 60 * 1000;
+const PRECONVERT_MAX_BYTES = 256 * 1024 * 1024;
+const NOTE_IMAGE_LABELS = {
+  notes: 'Notes',
+  tech_notes: 'Tech Notes',
+  radiologist_notes: 'Radiologist Notes',
+  radiology_report: 'Radiology Report',
+} as const;
 const SCREEN_RECORDING_MIME_CANDIDATES = [
   'video/webm;codecs=vp8,opus',
   'video/webm;codecs=vp8',
@@ -40,20 +51,30 @@ function getPreferredScreenRecordingMimeType() {
   return SCREEN_RECORDING_MIME_CANDIDATES.find((mimeType) => MediaRecorder.isTypeSupported(mimeType)) || 'video/webm';
 }
 
+function calculateDecimalAge(dob: string, studyDate: string) {
+  if (!dob || !studyDate) return '';
+  const dobDate = new Date(`${dob}T00:00:00Z`);
+  const examDate = new Date(`${studyDate}T00:00:00Z`);
+  if (Number.isNaN(dobDate.getTime()) || Number.isNaN(examDate.getTime())) return '';
+  const diffMs = examDate.getTime() - dobDate.getTime();
+  if (diffMs < 0) return '';
+  const years = diffMs / (365.2425 * 24 * 60 * 60 * 1000);
+  return years.toFixed(4).padStart(7, '0');
+}
+
 export default function UploadStudy() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { user } = useAuth();
-  const studyApiAuth = useMemo(
-    () => (user ? { email: user.email, role: user.role, name: user.name } : undefined),
-    [user]
-  );
+  const { user, whiteLabelAccount, studyApiAuth, hasPermission } = useAuth();
+  const canSeeRevenue = !whiteLabelAccount || Boolean(user?.isSuperAdmin);
+  const canUploadStudies = hasPermission('uploadStudies');
   const dicomInputRef = useRef<HTMLInputElement>(null);
   const jpeg2000InputRef = useRef<HTMLInputElement>(null);
   const dicomFolderInputRef = useRef<HTMLInputElement>(null);
   const mp4InputRef = useRef<HTMLInputElement>(null);
   const pdfInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
+  const signAfterUploadRef = useRef(false);
   const displayStreamRef = useRef<MediaStream | null>(null);
   const liveSessionIdRef = useRef<string | null>(null);
   const recordingStartedAtRef = useRef<number | null>(null);
@@ -65,20 +86,38 @@ export default function UploadStudy() {
   const [form, setForm] = useState({
     patient_name: '',
     patient_age: '',
+    patient_dob: '',
     patient_sex: '',
     patient_zip: '',
     study_date: '',
+    octrqaui: '',
+    octraccui: '',
+    client_email: '',
+    client_name: '',
+    subclient: '',
+    md_name: 'Sarai',
+    revenue: '',
     modality: '',
     notes: '',
+    tech_notes: '',
+    radiologist_notes: '',
+    radiology_report: '',
   });
   const [dicomFiles, setDicomFiles] = useState<File[]>([]);
   const [mp4File, setMp4File] = useState<File | null>(null);
   const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [noteImageFiles, setNoteImageFiles] = useState<Record<keyof typeof NOTE_IMAGE_LABELS, File | null>>({
+    notes: null,
+    tech_notes: null,
+    radiologist_notes: null,
+    radiology_report: null,
+  });
   const [convertJpeg2000ToDcm, setConvertJpeg2000ToDcm] = useState(false);
   const [conversionToken, setConversionToken] = useState<string | null>(null);
   const [conversionExpiresAt, setConversionExpiresAt] = useState<string | null>(null);
   const [preconverting, setPreconverting] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [clients, setClients] = useState<CareClient[]>([]);
   const [progress, setProgress] = useState(0);
   const [progressText, setProgressText] = useState('');
   const [redactionSummary, setRedactionSummary] = useState('');
@@ -112,6 +151,9 @@ export default function UploadStudy() {
   const updateField = (field: string, value: string) =>
     setForm((f) => ({ ...f, [field]: value }));
 
+  const computedAge = useMemo(() => calculateDecimalAge(form.patient_dob, form.study_date), [form.patient_dob, form.study_date]);
+  const formWithComputedAge = useMemo(() => ({ ...form, patient_age: computedAge }), [computedAge, form]);
+
   const clampToDuration = (value: number) => Math.max(0, Math.min(recordingDuration, value));
   const clampTrimEndToDuration = (value: number) =>
     Math.max(0, Math.min(Math.max(0, recordingDuration), value));
@@ -120,7 +162,7 @@ export default function UploadStudy() {
   const waitForStudyProcessing = async (studyId: number) => {
     const startedAt = Date.now();
     let attempt = 0;
-    while (Date.now() - startedAt < 5 * 60 * 1000) {
+    while (Date.now() - startedAt < WORKFLOW_TIMEOUT_MS) {
       attempt += 1;
       const delayMs = Math.min(1800, 500 + attempt * 120);
       await new Promise((resolve) => setTimeout(resolve, delayMs));
@@ -148,6 +190,13 @@ export default function UploadStudy() {
     dicomFolderInputRef.current.setAttribute('webkitdirectory', '');
     dicomFolderInputRef.current.setAttribute('directory', '');
   }, []);
+
+  useEffect(() => {
+    if (!user?.email) return;
+    listCareClients()
+      .then((data) => setClients(data.clients || []))
+      .catch(() => setClients([]));
+  }, [user?.email]);
 
   const canScreenRecord =
     typeof window !== 'undefined' &&
@@ -231,8 +280,13 @@ export default function UploadStudy() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    const shouldOpenSignoff = signAfterUploadRef.current;
     if (!studyApiAuth) {
       toast.error('Session is still loading. Please try again.');
+      return;
+    }
+    if (!canUploadStudies) {
+      toast.error('Your account is view-only for uploads.');
       return;
     }
     if (liveSessionId || finalizingLive) {
@@ -241,11 +295,6 @@ export default function UploadStudy() {
     }
     if (processingRecording) {
       toast.error('Wait for recording processing to finish before uploading.');
-      return;
-    }
-
-    if (!form.patient_name || !form.patient_age || !form.patient_sex || !form.patient_zip || !form.modality) {
-      toast.error('Please fill in all required fields');
       return;
     }
 
@@ -260,11 +309,6 @@ export default function UploadStudy() {
 
     const hasDicomMedia = dicomFiles.length > 0 || Boolean(conversionToken);
     const hasAlternateMedia = Boolean(mp4File) || Boolean(currentRecordingBlob);
-
-    if (!hasDicomMedia && !hasAlternateMedia) {
-      toast.error('Attach DICOM/JPEG2000 files or another media type (MP4 or screen recording).');
-      return;
-    }
 
     try {
       setUploading(true);
@@ -285,7 +329,7 @@ export default function UploadStudy() {
         setProgressText('Recording processing complete. Starting upload...');
       }
 
-      const result = await uploadStudy(form, dicomFiles, mp4File, pdfFile, {
+      const result = await uploadStudy(formWithComputedAge, dicomFiles, mp4File, pdfFile, {
         convertJpeg2000ToDcm: convertJpeg2000ToDcm,
         redactTextOnUpload: false,
         conversionToken: conversionToken || undefined,
@@ -310,6 +354,26 @@ export default function UploadStudy() {
           studyApiAuth
         );
         toast.success('Screen recording uploaded');
+      }
+
+      const noteImageEntries = Object.entries(noteImageFiles).filter((entry): entry is [keyof typeof NOTE_IMAGE_LABELS, File] =>
+        Boolean(entry[1])
+      );
+      if (noteImageEntries.length > 0) {
+        setProgress(94);
+        setProgressText('Attaching note images...');
+        for (const [field, file] of noteImageEntries) {
+          await addStudyReport(
+            result.study_id,
+            {
+              title: `${NOTE_IMAGE_LABELS[field]} image`,
+              caseLabel: form.patient_name || result.study?.patient_name || `Study #${result.study_id}`,
+              reportType: 'image',
+              file,
+            },
+            { auth: studyApiAuth }
+          );
+        }
       }
 
       const initialStudyStatus = String(result.study?.status || '').toLowerCase();
@@ -362,13 +426,23 @@ export default function UploadStudy() {
       recordingStopPromiseRef.current = null;
       resolveRecordingStopRef.current = null;
       setRecordingNeedsProcessing(false);
+      setNoteImageFiles({
+        notes: null,
+        tech_notes: null,
+        radiologist_notes: null,
+        radiology_report: null,
+      });
 
+      if (shouldOpenSignoff) {
+        openStudySignoffPopup(result.study_id);
+      }
       navigate('/studies');
     } catch (error) {
       console.error(error);
-      toast.error(error instanceof Error ? error.message : 'Upload failed');
+      showErrorToast(error, 'Upload failed');
     } finally {
       setUploading(false);
+      signAfterUploadRef.current = false;
       setTimeout(() => {
         setProgress(0);
         setProgressText('');
@@ -385,6 +459,11 @@ export default function UploadStudy() {
   const handleConvertNow = async () => {
     if (dicomFiles.length === 0) {
       toast.error('Select DICOM/JPEG2000 files before running conversion');
+      return;
+    }
+    const selectedBytes = dicomFiles.reduce((sum, file) => sum + (file.size || 0), 0);
+    if (selectedBytes > PRECONVERT_MAX_BYTES) {
+      toast.info('Large JPEG2000 folders are converted automatically during upload. Click Create Case to upload this selection.');
       return;
     }
     if (!studyApiAuth) {
@@ -411,7 +490,7 @@ export default function UploadStudy() {
       }
     } catch (error) {
       console.error(error);
-      toast.error(error instanceof Error ? error.message : 'Pre-conversion failed');
+      showErrorToast(error, 'Pre-conversion failed');
       setConversionToken(null);
       setConversionExpiresAt(null);
     } finally {
@@ -499,7 +578,7 @@ export default function UploadStudy() {
       toast.success('Recording started');
       return true;
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to start recording');
+      showErrorToast(error, 'Failed to start recording');
       return false;
     }
   };
@@ -609,7 +688,7 @@ export default function UploadStudy() {
           let done = false;
           const startedAt = Date.now();
           let pollAttempt = 0;
-          while (!done && Date.now() - startedAt < 5 * 60 * 1000) {
+          while (!done && Date.now() - startedAt < WORKFLOW_TIMEOUT_MS) {
             pollAttempt += 1;
             const pollDelayMs = Math.min(1500, 400 + pollAttempt * 100);
             await new Promise((resolve) => setTimeout(resolve, pollDelayMs));
@@ -643,7 +722,7 @@ export default function UploadStudy() {
         setRecordingNeedsProcessing(false);
         navigate('/studies');
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Failed to finalize live case');
+        showErrorToast(error, 'Failed to finalize live case');
       } finally {
         setFinalizingLive(false);
       }
@@ -656,21 +735,28 @@ export default function UploadStudy() {
       toast.error('Session is still loading. Please try again.');
       return;
     }
-    if (!form.patient_name || !form.patient_age || !form.patient_sex || !form.patient_zip || !form.modality) {
-      toast.error('Set Study Title, Age, Sex, Zip Code, and Modality before going live');
-      return;
-    }
     try {
       setStartingLive(true);
       const { session, study } = await startLiveCase(
         {
           patient_name: form.patient_name,
-          patient_age: form.patient_age,
+          patient_age: computedAge,
+          patient_dob: form.patient_dob,
           patient_sex: form.patient_sex,
           patient_zip: form.patient_zip,
           study_date: form.study_date,
+          octrqaui: form.octrqaui,
+          octraccui: form.octraccui,
+          client_email: form.client_email,
+          client_name: form.client_name,
+          subclient: form.subclient,
+          md_name: form.md_name,
+          revenue: form.revenue,
           modality: form.modality,
           notes: form.notes,
+          tech_notes: form.tech_notes,
+          radiologist_notes: form.radiologist_notes,
+          radiology_report: form.radiology_report,
           started_by_email: user?.email,
           started_by_name: user?.name,
         },
@@ -689,7 +775,7 @@ export default function UploadStudy() {
       }
       toast.success(`Live sharing started (Study #${study.id})`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to start live sharing');
+      showErrorToast(error, 'Failed to start live sharing');
     } finally {
       setStartingLive(false);
     }
@@ -722,7 +808,7 @@ export default function UploadStudy() {
       setRecoverableLiveSession(null);
       toast.success('Previous live session closed');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to close previous live session');
+      showErrorToast(error, 'Failed to close previous live session');
     }
   };
 
@@ -980,7 +1066,7 @@ export default function UploadStudy() {
       }
       return nextBlob;
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to edit recording');
+      showErrorToast(error, 'Failed to edit recording');
       return null;
     } finally {
       URL.revokeObjectURL(videoUrl);
@@ -1067,56 +1153,71 @@ export default function UploadStudy() {
   }, [cropDragging]);
 
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-4xl space-y-6">
       <div className="animate-fade-up">
-        <h1 className="text-2xl font-semibold tracking-tight">Upload Study</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Submit a new imaging study for processing</p>
+        <h1 className="text-2xl font-semibold tracking-tight">New Case</h1>
+        <p className="mt-1 text-sm text-muted-foreground">Create a new case and submit imaging for processing</p>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6 animate-fade-up-delay-1">
-        {/* Patient info */}
         <div className="rounded-xl border bg-card p-6 shadow-sm space-y-4">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Patient Information</h2>
-          <div className="grid gap-4 sm:grid-cols-1">
+          <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Case Information</h2>
+          <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="patient_name">Study Title *</Label>
+              <Label htmlFor="patient_name">Study Title</Label>
               <Input
                 id="patient_name"
                 value={form.patient_name}
                 onChange={(e) => updateField('patient_name', e.target.value)}
                 placeholder="Enter study title"
-                required
               />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="client_name">Client</Label>
+              <Input
+                id="client_name"
+                value={form.client_name}
+                onChange={(e) => {
+                  const value = e.target.value;
+                  const matchedClient = clients.find(
+                    (client) => client.name.toLowerCase() === value.trim().toLowerCase()
+                  );
+                  setForm((current) => ({
+                    ...current,
+                    client_name: value,
+                    client_email: matchedClient?.email || current.client_email,
+                  }));
+                }}
+                placeholder="Enter client"
+                list="clientOptions"
+              />
+              <datalist id="clientOptions">
+                {clients.map((client) => (
+                  <option key={client.email} value={client.name} />
+                ))}
+              </datalist>
             </div>
           </div>
           <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2">
-              <Label htmlFor="patient_age">Age *</Label>
+              <Label htmlFor="patient_dob">DOB</Label>
               <Input
-                id="patient_age"
-                value={form.patient_age}
-                onChange={(e) => updateField('patient_age', e.target.value)}
-                placeholder="Age"
-                inputMode="numeric"
-                required
+                id="patient_dob"
+                value={form.patient_dob}
+                onChange={(e) => updateField('patient_dob', e.target.value)}
+                placeholder="YYYY-MM-DD"
               />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="patient_sex">Sex *</Label>
-              <Select value={form.patient_sex} onValueChange={(v) => updateField('patient_sex', v)}>
-                <SelectTrigger id="patient_sex">
-                  <SelectValue placeholder="Select sex" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Female">Female</SelectItem>
-                  <SelectItem value="Male">Male</SelectItem>
-                  <SelectItem value="Other">Other</SelectItem>
-                  <SelectItem value="Unknown">Unknown</SelectItem>
-                </SelectContent>
-              </Select>
+              <Label htmlFor="study_date">Study Date</Label>
+              <Input id="study_date" value={form.study_date} onChange={(e) => updateField('study_date', e.target.value)} placeholder="YYYY-MM-DD" />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="patient_zip">Zip Code *</Label>
+              <Label htmlFor="patient_sex">Sex</Label>
+              <Input id="patient_sex" value={form.patient_sex} onChange={(e) => updateField('patient_sex', e.target.value)} placeholder="Enter sex" />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="patient_zip">Zip Code</Label>
               <Input
                 id="patient_zip"
                 value={form.patient_zip}
@@ -1124,32 +1225,138 @@ export default function UploadStudy() {
                 placeholder="Zip code"
                 inputMode="numeric"
                 autoComplete="postal-code"
-                required
               />
             </div>
           </div>
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-3">
             <div className="space-y-2">
-              <Label htmlFor="study_date">Study Date</Label>
-              <Input id="study_date" type="date" value={form.study_date} onChange={(e) => updateField('study_date', e.target.value)} />
+              <Label htmlFor="octrqaui">OCTRQAUI</Label>
+              <Input id="octrqaui" value={form.octrqaui} onChange={(e) => updateField('octrqaui', e.target.value)} />
             </div>
             <div className="space-y-2">
-              <Label htmlFor="modality">Modality *</Label>
-              <Select value={form.modality} onValueChange={(v) => updateField('modality', v)}>
-                <SelectTrigger id="modality">
-                  <SelectValue placeholder="Select modality" />
-                </SelectTrigger>
-                <SelectContent>
-                  {MODALITIES.map((m) => (
-                    <SelectItem key={m} value={m}>{m}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label htmlFor="octraccui">OCTRACCUI</Label>
+              <Input id="octraccui" value={form.octraccui} onChange={(e) => updateField('octraccui', e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="subclient">Subclient</Label>
+              <Input id="subclient" value={form.subclient} onChange={(e) => updateField('subclient', e.target.value)} />
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            <div className="space-y-2">
+              <Label htmlFor="md_name">MD</Label>
+              <Input
+                id="md_name"
+                value={form.md_name}
+                onChange={(e) => updateField('md_name', e.target.value)}
+                placeholder="Sarai"
+              />
+            </div>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-3">
+            {canSeeRevenue && (
+              <div className="space-y-2">
+                <Label htmlFor="revenue">Revenue</Label>
+                <Input
+                  id="revenue"
+                  value={form.revenue}
+                  onChange={(e) => updateField('revenue', e.target.value)}
+                  placeholder="0.00"
+                  inputMode="decimal"
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="modality">Modality</Label>
+              <Input
+                id="modality"
+                value={form.modality}
+                onChange={(e) => updateField('modality', e.target.value)}
+                placeholder="CT, MR, US..."
+                list="modalityOptions"
+              />
+              <datalist id="modalityOptions">
+                {MODALITIES.map((modality) => (
+                  <option key={modality} value={modality} />
+                ))}
+              </datalist>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="patient_age">Calculated Age</Label>
+              <Input id="patient_age" value={computedAge} readOnly className="bg-muted/40" placeholder="N/A" />
             </div>
           </div>
           <div className="space-y-2">
-            <Label htmlFor="notes">Notes</Label>
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="notes">Notes</Label>
+              <Button type="button" size="icon" variant="ghost" className="h-8 w-8" title="Attach image to notes" asChild>
+                <label>
+                  <Paperclip className="h-4 w-4" />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(event) => setNoteImageFiles((current) => ({ ...current, notes: event.target.files?.[0] || null }))}
+                  />
+                </label>
+              </Button>
+            </div>
             <Textarea id="notes" value={form.notes} onChange={(e) => updateField('notes', e.target.value)} placeholder="Clinical notes or study description..." rows={3} />
+            {noteImageFiles.notes && <p className="text-xs text-muted-foreground preserve-case">{noteImageFiles.notes.name}</p>}
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="tech_notes">Tech Notes</Label>
+              <Button type="button" size="icon" variant="ghost" className="h-8 w-8" title="Attach image to tech notes" asChild>
+                <label>
+                  <Paperclip className="h-4 w-4" />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(event) => setNoteImageFiles((current) => ({ ...current, tech_notes: event.target.files?.[0] || null }))}
+                  />
+                </label>
+              </Button>
+            </div>
+            <Textarea id="tech_notes" value={form.tech_notes} onChange={(e) => updateField('tech_notes', e.target.value)} placeholder="Technical notes for the study..." rows={3} />
+            {noteImageFiles.tech_notes && <p className="text-xs text-muted-foreground preserve-case">{noteImageFiles.tech_notes.name}</p>}
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="radiologist_notes">Radiologist Notes</Label>
+              <Button type="button" size="icon" variant="ghost" className="h-8 w-8" title="Attach image to radiologist notes" asChild>
+                <label>
+                  <Paperclip className="h-4 w-4" />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(event) => setNoteImageFiles((current) => ({ ...current, radiologist_notes: event.target.files?.[0] || null }))}
+                  />
+                </label>
+              </Button>
+            </div>
+            <Textarea id="radiologist_notes" value={form.radiologist_notes} onChange={(e) => updateField('radiologist_notes', e.target.value)} placeholder="Radiologist notes..." rows={3} />
+            {noteImageFiles.radiologist_notes && <p className="text-xs text-muted-foreground preserve-case">{noteImageFiles.radiologist_notes.name}</p>}
+          </div>
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <Label htmlFor="radiology_report">Radiology Report</Label>
+              <Button type="button" size="icon" variant="ghost" className="h-8 w-8" title="Attach image to radiology report" asChild>
+                <label>
+                  <Paperclip className="h-4 w-4" />
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="sr-only"
+                    onChange={(event) => setNoteImageFiles((current) => ({ ...current, radiology_report: event.target.files?.[0] || null }))}
+                  />
+                </label>
+              </Button>
+            </div>
+            <Textarea id="radiology_report" value={form.radiology_report} onChange={(e) => updateField('radiology_report', e.target.value)} placeholder="Paste or type the radiology report..." rows={5} />
+            {noteImageFiles.radiology_report && <p className="text-xs text-muted-foreground preserve-case">{noteImageFiles.radiology_report.name}</p>}
           </div>
         </div>
 
@@ -1227,7 +1434,7 @@ export default function UploadStudy() {
                 className="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border px-4 py-8 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-primary active:scale-[0.99]"
               >
                 <FileImage className="h-5 w-5" />
-                Upload DICOM folder
+                Upload DICOM/JPEG2000 folder
               </button>
             </div>
             <button
@@ -1243,8 +1450,8 @@ export default function UploadStudy() {
             >
               <Wand2 className="h-3.5 w-3.5" />
               {convertJpeg2000ToDcm
-                ? 'JPEG2000->DCM conversion ON'
-                : 'JPEG2000->DCM conversion OFF (faster for normal DICOM)'}
+                ? 'JPEG2000 conversion forced ON'
+                : 'JPEG2000 conversion AUTO'}
             </button>
             <div className="mt-1 inline-flex items-center gap-2 rounded-md border border-black/80 bg-black px-3 py-1.5 text-xs text-white">
               <FileText className="h-3.5 w-3.5" />
@@ -1516,7 +1723,7 @@ export default function UploadStudy() {
             <input
               ref={mp4InputRef}
               type="file"
-              accept=".mp4,video/mp4"
+              accept=".mp4,.mov,.m4v,.webm,.mkv,.avi,video/*"
               className="hidden"
               onChange={(e) => {
                 if (e.target.files?.[0]) setMp4File(e.target.files[0]);
@@ -1588,11 +1795,26 @@ export default function UploadStudy() {
         <div className="flex gap-3">
           <Button
             type="submit"
-            disabled={uploading || preconverting || processingRecording || Boolean(liveSessionId) || finalizingLive}
+            onClick={() => {
+              signAfterUploadRef.current = false;
+            }}
+            disabled={uploading || preconverting || processingRecording || Boolean(liveSessionId) || finalizingLive || !canUploadStudies}
             className="active:scale-[0.98] transition-transform"
           >
             <Upload className="mr-2 h-4 w-4" />
-            {uploading ? 'Uploading...' : 'Upload Study'}
+            {uploading ? 'Creating...' : 'Create Case'}
+          </Button>
+          <Button
+            type="submit"
+            variant="outline"
+            onClick={() => {
+              signAfterUploadRef.current = true;
+            }}
+            disabled={uploading || preconverting || processingRecording || Boolean(liveSessionId) || finalizingLive || !canUploadStudies}
+            className="active:scale-[0.98] transition-transform"
+          >
+            <FileText className="mr-2 h-4 w-4" />
+            Create & Sign
           </Button>
           <Button type="button" variant="outline" onClick={() => navigate('/studies')} disabled={uploading || preconverting}>
             Cancel

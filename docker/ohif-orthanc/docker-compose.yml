@@ -11,6 +11,10 @@ services:
     restart: always
     networks:
       - pacs
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   ohif_viewer:
     container_name: ohif
@@ -26,6 +30,10 @@ services:
     restart: always
     networks:
       - pacs
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
 networks:
   pacs:

@@ -24,8 +24,8 @@ server {
     proxy_request_buffering off;
     proxy_buffering off;
     proxy_connect_timeout 60s;
-    proxy_send_timeout 600s;
-    proxy_read_timeout 600s;
+    proxy_send_timeout 1800s;
+    proxy_read_timeout 1800s;
     limit_req zone=mapdr_api burst=120 nodelay;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
@@ -66,8 +66,8 @@ server {
     proxy_http_version 1.1;
     proxy_request_buffering off;
     proxy_buffering off;
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -79,8 +79,8 @@ server {
     proxy_http_version 1.1;
     proxy_request_buffering off;
     proxy_buffering off;
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -92,8 +92,8 @@ server {
     proxy_http_version 1.1;
     proxy_request_buffering off;
     proxy_buffering off;
-    proxy_read_timeout 600s;
-    proxy_send_timeout 600s;
+    proxy_read_timeout 1800s;
+    proxy_send_timeout 1800s;
     proxy_set_header Host $host;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;

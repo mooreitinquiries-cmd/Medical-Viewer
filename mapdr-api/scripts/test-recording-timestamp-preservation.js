@@ -36,6 +36,12 @@ assert.match(
 
 assert.match(
   serverSource,
+  /validateRecordingUploadIntegrity\(req\.file\.path, req\.body\);\s*await normalizeWebmRecordingTimestamps\(req\.file\.path\);/,
+  'live recording upload must normalize the WebM source before MP4 conversion'
+);
+
+assert.match(
+  serverSource,
   /if \(!study \|\| !session \|\| !job\.source_path \|\| !fs\.existsSync\(job\.source_path\)\) \{\s*if \(session\) \{\s*session\.upload_in_progress = false;/,
   'missing live finalize sources must clear upload_in_progress so sessions are not stuck'
 );

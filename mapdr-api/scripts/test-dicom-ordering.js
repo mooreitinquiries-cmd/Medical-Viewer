@@ -74,12 +74,14 @@ const positionedInstances = sortDicomInstances(
     {
       ID: 'slice-high',
       MainDicomTags: {
+        InstanceNumber: '1',
         ImagePositionPatient: '0\\0\\12',
       },
     },
     {
       ID: 'slice-low',
       MainDicomTags: {
+        InstanceNumber: '99',
         ImagePositionPatient: '0\\0\\3',
       },
     },
@@ -90,6 +92,58 @@ const positionedInstances = sortDicomInstances(
 assert.deepStrictEqual(
   positionedInstances.map((item) => item.instance.ID),
   ['slice-low', 'slice-high']
+);
+
+const orientedInstances = sortDicomInstances(
+  [
+    {
+      ID: 'sagittal-later',
+      MainDicomTags: {
+        ImageOrientationPatient: '0\\1\\0\\0\\0\\1',
+        ImagePositionPatient: '9\\0\\0',
+        InstanceNumber: '1',
+      },
+    },
+    {
+      ID: 'sagittal-earlier',
+      MainDicomTags: {
+        ImageOrientationPatient: '0\\1\\0\\0\\0\\1',
+        ImagePositionPatient: '2\\0\\0',
+        InstanceNumber: '2',
+      },
+    },
+  ],
+  ordering
+);
+
+assert.deepStrictEqual(
+  orientedInstances.map((item) => item.instance.ID),
+  ['sagittal-earlier', 'sagittal-later']
+);
+
+const temporalInstances = sortDicomInstances(
+  [
+    {
+      ID: 'phase-2-slice-1',
+      MainDicomTags: {
+        TemporalPositionIdentifier: '2',
+        ImagePositionPatient: '0\\0\\1',
+      },
+    },
+    {
+      ID: 'phase-1-slice-5',
+      MainDicomTags: {
+        TemporalPositionIdentifier: '1',
+        ImagePositionPatient: '0\\0\\5',
+      },
+    },
+  ],
+  ordering
+);
+
+assert.deepStrictEqual(
+  temporalInstances.map((item) => item.instance.ID),
+  ['phase-1-slice-5', 'phase-2-slice-1']
 );
 
 console.log('dicom ordering regression passed');

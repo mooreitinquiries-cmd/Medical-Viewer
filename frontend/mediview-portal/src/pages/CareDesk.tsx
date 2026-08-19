@@ -5,9 +5,16 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { ArrowRight, MessageCircle, Video, GripVertical } from 'lucide-react';
+import { ArrowRight, Cloud, MessageCircle, Video, GripVertical } from 'lucide-react';
 import { toast } from 'sonner';
-import { fetchStudies, getMediaBaseUrl, uploadCaseReportPdfs, type Study } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
+import {
+  exportPatientSummaryToCloud,
+  fetchStudies,
+  getMediaBaseUrl,
+  uploadCaseReportPdfs,
+  type Study,
+} from '@/lib/api';
 import {
   createCareCase,
   listCareCases,
@@ -16,16 +23,28 @@ import {
   type CareCase,
   type CarePatient,
 } from '@/lib/careApi';
+import { getVisibleErrorMessage } from '@/lib/sessionApi';
+
+const CALL_APP_URL = 'https://call.octelerad.com';
 
 export default function CareDesk() {
   const navigate = useNavigate();
+  const { user, hasFeature, hasPermission, studyApiAuth } = useAuth();
+  const canCreateReports = hasPermission('createReports');
+  const canExportData = hasPermission('exportData');
+  const canUploadStudies = hasPermission('uploadStudies');
   const [patients, setPatients] = useState<CarePatient[]>([]);
   const [cases, setCases] = useState<CareCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [exportingPackage, setExportingPackage] = useState(false);
   const [patientEmail, setPatientEmail] = useState('');
   const [caseTitle, setCaseTitle] = useState('');
   const [caseNote, setCaseNote] = useState('');
+  const [soapSubjective, setSoapSubjective] = useState('');
+  const [soapObjective, setSoapObjective] = useState('');
+  const [soapAssessment, setSoapAssessment] = useState('');
+  const [soapPlan, setSoapPlan] = useState('');
   const [studies, setStudies] = useState<Study[]>([]);
   const [currentStudyId, setCurrentStudyId] = useState<number | null>(null);
   const [priorStudyIds, setPriorStudyIds] = useState<number[]>([]);
@@ -45,7 +64,8 @@ export default function CareDesk() {
 
         setPatientEmail((prev) => prev || patientsData.patients[0]?.email || '');
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Failed to load care desk');
+        const message = getVisibleErrorMessage(error, 'Failed to load care desk');
+        if (message) toast.error(message);
       } finally {
         setLoading(false);
       }
@@ -128,6 +148,16 @@ export default function CareDesk() {
     return orderedStack.filter((entry) => Boolean(entry.pdf_url));
   }, [orderedStack]);
 
+  const soapNoteRows = useMemo(
+    () => [
+      { label: 'Subjective', value: soapSubjective.trim() },
+      { label: 'Objective', value: soapObjective.trim() },
+      { label: 'Assessment', value: soapAssessment.trim() },
+      { label: 'Plan', value: soapPlan.trim() },
+    ],
+    [soapAssessment, soapObjective, soapPlan, soapSubjective]
+  );
+
   useEffect(() => {
     const allowedIds = new Set(availableStudies.map((entry) => entry.id));
     setCurrentStudyId((prev) => (prev && allowedIds.has(prev) ? prev : null));
@@ -207,28 +237,87 @@ export default function CareDesk() {
       toast.error('Select a patient');
       return;
     }
+    if (!user) {
+      toast.error('Session is still loading. Please try again.');
+      return;
+    }
+    if (!canUploadStudies) {
+      toast.error('Your account cannot create patient cases.');
+      return;
+    }
 
     try {
       setSubmitting(true);
-      const uploadedReports = priorReportFiles.length > 0 ? await uploadCaseReportPdfs(priorReportFiles) : { reports: [] };
-      const selectedStudyReportItems = selectedStudiesWithReports
+      const canUseNextcloudReports = hasFeature('nextcloudReports') && canExportData;
+      const canUseSoapNotes = hasFeature('soapNotes') && canCreateReports;
+      const uploadedReports =
+        canUseNextcloudReports && priorReportFiles.length > 0
+          ? await uploadCaseReportPdfs(priorReportFiles)
+          : { reports: [] };
+      const selectedStudyReportPackageItems = selectedStudiesWithReports
         .filter((entry) => selectedPriorReportStudyIds.includes(entry.id) && entry.pdf_url)
         .map((entry) => ({
-          url: toAbsoluteMediaUrl(String(entry.pdf_url)),
+          url: String(entry.pdf_url),
           filename: `study-${entry.id}-report.pdf`,
           sourceStudyId: entry.id,
           createdAt: new Date().toISOString(),
         }));
-      const uploadedReportItems = (uploadedReports.reports || []).map((entry) => ({
-        url: toAbsoluteMediaUrl(entry.report_url),
+      const uploadedReportPackageItems = (uploadedReports.reports || []).map((entry) => ({
+        url: entry.report_url,
         filename: entry.filename || 'prior-report.pdf',
         createdAt: entry.created_at || new Date().toISOString(),
+      }));
+      const packageReportItems = [...selectedStudyReportPackageItems, ...uploadedReportPackageItems];
+      const studyStackPayload = orderedStack.map((entry, index) => ({
+        studyId: entry.id,
+        relation: entry.relation,
+        order: index,
+      }));
+      const soapNotes = canUseSoapNotes
+        ? {
+            subjective: soapSubjective.trim(),
+            objective: soapObjective.trim(),
+            assessment: soapAssessment.trim(),
+            plan: soapPlan.trim(),
+          }
+        : undefined;
+
+      const packageExport = canUseNextcloudReports
+        ? await (async () => {
+            setExportingPackage(true);
+            try {
+              return await exportPatientSummaryToCloud(
+                {
+                  patientEmail: selectedPatient.email,
+                  patientName: selectedPatient.name,
+                  title: caseTitle.trim(),
+                  notes: caseNote.trim(),
+                  soapNotes,
+                  studyStack: studyStackPayload,
+                  priorReports: packageReportItems,
+                },
+                { auth: studyApiAuth }
+              );
+            } finally {
+              setExportingPackage(false);
+            }
+          })()
+        : null;
+
+      const selectedStudyReportItems = selectedStudyReportPackageItems.map((entry) => ({
+        ...entry,
+        url: toAbsoluteMediaUrl(entry.url),
+      }));
+      const uploadedReportItems = uploadedReportPackageItems.map((entry) => ({
+        ...entry,
+        url: toAbsoluteMediaUrl(entry.url),
       }));
 
       const response = await createCareCase({
         patientEmail: selectedPatient.email,
         title: caseTitle.trim(),
         notes: caseNote.trim(),
+        soapNotes,
         studyStack: orderedStack.map((entry, index) => ({
           studyId: entry.id,
           relation: entry.relation,
@@ -240,19 +329,35 @@ export default function CareDesk() {
           dicomCount: entry.dicom_count || 0,
         })),
         priorReports: [...selectedStudyReportItems, ...uploadedReportItems],
+        nextcloudShare: packageExport
+          ? {
+              url: packageExport.url,
+              folder: packageExport.folder,
+              createdAt: new Date().toISOString(),
+              studyCount: packageExport.study_count,
+              reportCount: packageExport.report_count,
+              dicomExported: packageExport.dicom_exported,
+            }
+          : null,
       });
 
       setCases((prev) => [response.case, ...prev]);
       setCaseTitle('');
       setCaseNote('');
+      setSoapSubjective('');
+      setSoapObjective('');
+      setSoapAssessment('');
+      setSoapPlan('');
       setCurrentStudyId(null);
       setPriorStudyIds([]);
       setSelectedPriorReportStudyIds([]);
       setPriorReportFiles([]);
       setPriorAutoSort(true);
-      toast.success(`Case sent to ${selectedPatient.name}`);
+      toast.success(`Case sent to ${selectedPatient.name} with cloud package`);
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to send case');
+      setExportingPackage(false);
+      const message = getVisibleErrorMessage(error, 'Failed to send case');
+      if (message) toast.error(message);
     } finally {
       setSubmitting(false);
     }
@@ -270,9 +375,10 @@ export default function CareDesk() {
       const scheduledAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
       await scheduleCareCall({ contactEmail: selectedPatient.email, scheduledAt });
       toast.success(`Follow-up call scheduled with ${selectedPatient.name}`);
-      navigate(`/video?target=${encodeURIComponent(selectedPatient.name)}`);
+      window.open(CALL_APP_URL, '_blank', 'noopener,noreferrer');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to schedule video call');
+      const message = getVisibleErrorMessage(error, 'Failed to schedule video call');
+      if (message) toast.error(message);
     }
   };
 
@@ -333,6 +439,57 @@ export default function CareDesk() {
                 placeholder="Findings and patient-facing instructions..."
               />
             </div>
+
+            {hasFeature('soapNotes') && canCreateReports && (
+            <div className="space-y-3 rounded-md border p-3">
+              <div>
+                <div className="text-sm font-medium">SOAP Clinical Note</div>
+                <div className="text-xs text-muted-foreground">Subjective, Objective, Assessment, and Plan are formatted into a note report.</div>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                <div className="space-y-1">
+                  <Label htmlFor="soapSubjective">Subjective</Label>
+                  <Textarea
+                    id="soapSubjective"
+                    rows={3}
+                    value={soapSubjective}
+                    onChange={(event) => setSoapSubjective(event.target.value)}
+                    placeholder="Symptoms, history, patient concerns..."
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="soapObjective">Objective</Label>
+                  <Textarea
+                    id="soapObjective"
+                    rows={3}
+                    value={soapObjective}
+                    onChange={(event) => setSoapObjective(event.target.value)}
+                    placeholder="Imaging observations, measurements, exam details..."
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="soapAssessment">Assessment</Label>
+                  <Textarea
+                    id="soapAssessment"
+                    rows={3}
+                    value={soapAssessment}
+                    onChange={(event) => setSoapAssessment(event.target.value)}
+                    placeholder="Clinical impression or differential..."
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="soapPlan">Plan</Label>
+                  <Textarea
+                    id="soapPlan"
+                    rows={3}
+                    value={soapPlan}
+                    onChange={(event) => setSoapPlan(event.target.value)}
+                    placeholder="Follow-up, treatment, referrals, next steps..."
+                  />
+                </div>
+              </div>
+            </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="currentStudy">Current Study</Label>
@@ -407,6 +564,7 @@ export default function CareDesk() {
               )}
             </div>
 
+            {hasFeature('nextcloudReports') && canExportData && (
             <div className="space-y-2 rounded-md border p-3">
               <div className="text-sm font-medium">Add Prior Reports (PDF)</div>
               {selectedStudiesWithReports.length === 0 ? (
@@ -440,13 +598,23 @@ export default function CareDesk() {
                 )}
               </div>
             </div>
+            )}
 
             <Button
-              disabled={!caseTitle.trim() || !caseNote.trim() || !selectedPatient || submitting}
+              disabled={!caseTitle.trim() || !caseNote.trim() || !selectedPatient || submitting || !canUploadStudies}
               onClick={handleSendCase}
             >
-              Send Case To <span className="preserve-case">{selectedPatient?.name || 'Patient'}</span>
-              <ArrowRight className="ml-2 h-4 w-4" />
+              {exportingPackage ? (
+                <>
+                  Exporting Cloud Package
+                  <Cloud className="ml-2 h-4 w-4" />
+                </>
+              ) : (
+                <>
+                  Send Case To <span className="preserve-case">{selectedPatient?.name || 'Patient'}</span>
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </>
+              )}
             </Button>
           </div>
         </div>
@@ -471,6 +639,36 @@ export default function CareDesk() {
               </div>
             )}
           </div>
+
+          {hasFeature('soapNotes') && canCreateReports && (
+          <div className="rounded-xl border bg-card p-4 shadow-sm">
+            <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+              <Cloud className="h-4 w-4" />
+              SOAP Note Report Preview
+            </div>
+            <div className="rounded-md border bg-background p-4 text-sm">
+              <div className="border-b pb-3">
+                <div className="text-base font-semibold">SOAP Clinical Note</div>
+                <div className="mt-1 text-xs text-muted-foreground preserve-case">
+                  Patient: {selectedPatient?.name || 'Not selected'}
+                </div>
+                <div className="text-xs text-muted-foreground preserve-case">
+                  Case: {caseTitle.trim() || 'Untitled case'}
+                </div>
+              </div>
+              <div className="mt-3 space-y-3">
+                {soapNoteRows.map((entry) => (
+                  <div key={entry.label}>
+                    <div className="text-xs font-semibold uppercase text-muted-foreground">{entry.label}</div>
+                    <div className="mt-1 whitespace-pre-wrap preserve-case">
+                      {entry.value || <span className="text-muted-foreground">Not entered</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          )}
 
           <div className="rounded-xl border bg-card p-4 shadow-sm">
             <div className="mb-3 text-sm font-medium">Recent Cases</div>
@@ -502,10 +700,12 @@ export default function CareDesk() {
                 <MessageCircle className="mr-2 h-4 w-4" />
                 Message <span className="preserve-case">{selectedPatient?.name || 'Patient'}</span>
               </Button>
-              <Button className="w-full justify-start" variant="outline" onClick={handleScheduleCall}>
-                <Video className="mr-2 h-4 w-4" />
-                Video Call <span className="preserve-case">{selectedPatient?.name || 'Patient'}</span>
-              </Button>
+              {hasFeature('videoConsults') && (
+                <Button className="w-full justify-start" variant="outline" onClick={handleScheduleCall}>
+                  <Video className="mr-2 h-4 w-4" />
+                  Video Call <span className="preserve-case">{selectedPatient?.name || 'Patient'}</span>
+                </Button>
+              )}
             </div>
           </div>
         </div>

@@ -394,6 +394,111 @@ describe('updateStudyTechNotes', () => {
   });
 });
 
+describe('updateStudy', () => {
+  it('saves editable study metadata with auth headers', async () => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+
+    const payload = {
+      patient_age: '44',
+      modality: 'MR',
+      notes: 'Follow-up scan',
+      tech_notes: 'Updated protocol',
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        ok: true,
+        study: { id: 11, ...payload },
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const api = await import('@/lib/api');
+    const result = await api.updateStudy(11, payload, {
+      auth: { email: 'doctor@example.com', role: 'doctor', name: 'Doctor' },
+    });
+
+    expect(result.study.modality).toBe('MR');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/studies/11',
+      expect.objectContaining({
+        method: 'PUT',
+        headers: expect.objectContaining({
+          'content-type': 'application/json',
+          'x-user-email': 'doctor@example.com',
+          'x-user-role': 'doctor',
+        }),
+        body: JSON.stringify(payload),
+      })
+    );
+
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+});
+
+describe('exportPatientSummaryToCloud', () => {
+  it('exports selected patient summary package with auth headers', async () => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+
+    const payload = {
+      patientEmail: 'patient@example.com',
+      patientName: 'Patient One',
+      title: 'Follow-up',
+      notes: 'Patient-facing summary',
+      soapNotes: {
+        subjective: 'Patient reports continued pain',
+        objective: 'MRI reviewed',
+        assessment: 'Stable findings',
+        plan: 'Follow up after therapy',
+      },
+      studyStack: [{ studyId: 11, relation: 'current' as const, order: 0 }],
+      priorReports: [{ url: '/media/case-reports/report.pdf', filename: 'report.pdf' }],
+    };
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      headers: new Headers({ 'content-type': 'application/json' }),
+      json: async () => ({
+        ok: true,
+        folder: '/PatientSummaries/Patient_One/export',
+        url: 'https://cloud.example/s/share',
+        study_count: 1,
+        report_count: 1,
+        requested_report_count: 1,
+        dicom_exported: 120,
+      }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const api = await import('@/lib/api');
+    const result = await api.exportPatientSummaryToCloud(payload, {
+      auth: { email: 'doctor@example.com', role: 'doctor', name: 'Doctor' },
+    });
+
+    expect(result.url).toBe('https://cloud.example/s/share');
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/patient-summaries/export-nextcloud',
+      expect.objectContaining({
+        method: 'POST',
+        headers: expect.objectContaining({
+          'content-type': 'application/json',
+          'x-user-email': 'doctor@example.com',
+          'x-user-role': 'doctor',
+        }),
+        body: JSON.stringify(payload),
+      })
+    );
+
+    vi.unstubAllGlobals();
+    vi.resetModules();
+  });
+});
+
 describe('uploadStudy', () => {
   it('uploads study with MP4 only when no DICOM files are attached', async () => {
     vi.resetModules();
@@ -429,6 +534,9 @@ describe('uploadStudy', () => {
         study_date: '2026-05-14',
         modality: 'CT',
         notes: 'no dicom attached',
+        tech_notes: 'Probe and gain notes',
+        radiologist_notes: 'Radiologist preliminary note',
+        radiology_report: 'Final report text',
       },
       [],
       mp4File,
@@ -438,6 +546,13 @@ describe('uploadStudy', () => {
     expect(result.study_id).toBe(321);
     expect(result.dicom_count).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual(
+      expect.objectContaining({
+        tech_notes: 'Probe and gain notes',
+        radiologist_notes: 'Radiologist preliminary note',
+        radiology_report: 'Final report text',
+      })
+    );
 
     vi.unstubAllGlobals();
     vi.resetModules();
@@ -600,8 +715,8 @@ describe('uploadStudy', () => {
     const dicomUploadCalls = fetchMock.mock.calls.filter((call) =>
       String(call[0]).endsWith('/studies/777/dicom')
     );
-    expect(dicomUploadCalls).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(dicomUploadCalls).toHaveLength(3);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
 
     vi.unstubAllGlobals();
     vi.resetModules();
@@ -721,7 +836,53 @@ describe('uploadStudy', () => {
     vi.resetModules();
   });
 
-  it('isolates a large DICOM before it can hold up smaller files in the same batch', async () => {
+  it('uploads DICOM files to an existing study without creating a new study record', async () => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.stubEnv('VITE_DICOM_UPLOAD_BATCH_SIZE', '2');
+
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/studies/632/dicom') && init?.method === 'POST') {
+        return {
+          ok: true,
+          json: async () => ({ ok: true, study_id: 632, dicom_count: 2 }),
+          headers: new Headers({ 'content-type': 'application/json' }),
+        };
+      }
+      throw new Error(`Unexpected fetch call: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const api = await import('@/lib/api');
+    const dicomFiles = Array.from(
+      { length: 5 },
+      (_, index) => new File(['dicom'], `slice-${index + 1}.dcm`, { type: 'application/dicom' })
+    );
+
+    const result = await api.uploadDicomToStudy(632, dicomFiles, {
+      auth: { email: 'admin@example.com', role: 'admin', name: 'Admin' },
+    });
+
+    const calls = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).endsWith('/studies/632/dicom')
+    );
+    expect(calls).toHaveLength(1);
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).endsWith('/studies'))).toBe(false);
+    expect(calls[0]?.[1]).toMatchObject({
+      headers: expect.objectContaining({
+        'x-user-email': 'admin@example.com',
+      }),
+    });
+    expect(result.study_id).toBe(632);
+
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it('keeps files under the configured byte target together for large JPEG2000 folders', async () => {
     vi.resetModules();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
@@ -770,7 +931,7 @@ describe('uploadStudy', () => {
     const dicomUploadCalls = fetchMock.mock.calls.filter((call) =>
       String(call[0]).endsWith('/studies/780/dicom')
     );
-    expect(dicomUploadCalls).toHaveLength(2);
+    expect(dicomUploadCalls).toHaveLength(1);
 
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();

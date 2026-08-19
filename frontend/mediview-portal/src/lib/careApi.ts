@@ -1,4 +1,4 @@
-import { getAuthApiBaseCandidates } from '@/lib/sessionApi';
+import { AuthSessionError, getAuthApiBaseCandidates } from '@/lib/sessionApi';
 
 export interface CarePatient {
   email: string;
@@ -9,10 +9,22 @@ export interface CarePatient {
   openCaseCount: number;
 }
 
+export interface CareClient {
+  username: string;
+  email: string;
+  name: string;
+  role: 'clinic';
+  status: 'active' | 'suspended';
+  twoFactorEnabled: boolean;
+  createdAt: string;
+  lastLoginAt: string | null;
+}
+
 export interface CareCase {
   id: string;
   title: string;
   notes: string;
+  soapNotes?: CareCaseSoapNotes;
   status: 'new' | 'reviewed';
   createdAt: string;
   updatedAt: string;
@@ -22,6 +34,14 @@ export interface CareCase {
   doctorName: string;
   studyStack?: CareCaseStudyStackEntry[];
   priorReports?: CareCasePriorReport[];
+  nextcloudShare?: CareCaseNextcloudShare | null;
+}
+
+export interface CareCaseSoapNotes {
+  subjective?: string;
+  objective?: string;
+  assessment?: string;
+  plan?: string;
 }
 
 export interface CareCaseStudyStackEntry {
@@ -40,6 +60,15 @@ export interface CareCasePriorReport {
   filename?: string;
   sourceStudyId?: number | null;
   createdAt?: string;
+}
+
+export interface CareCaseNextcloudShare {
+  url: string;
+  folder?: string;
+  createdAt?: string;
+  studyCount?: number;
+  reportCount?: number;
+  dicomExported?: number;
 }
 
 export interface CareMessage {
@@ -77,6 +106,10 @@ async function handleResponse(res: Response) {
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
+    if (res.status === 401) {
+      throw new AuthSessionError(typeof data?.error === 'string' ? data.error : 'Authentication required');
+    }
+
     throw new Error(typeof data?.error === 'string' ? data.error : `Care request failed (${res.status})`);
   }
 
@@ -115,6 +148,44 @@ export async function listCarePatients(): Promise<{ patients: CarePatient[] }> {
   return request('/care/patients');
 }
 
+export async function listCareClients(): Promise<{ clients: CareClient[] }> {
+  return request('/care/clients');
+}
+
+export async function createCareClient(payload: {
+  name: string;
+  email: string;
+  username?: string;
+  password?: string;
+}): Promise<{ client: CareClient; temporaryPassword: string }> {
+  return request('/care/clients', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function createCarePatient(payload: {
+  name: string;
+  email: string;
+  username?: string;
+  password?: string;
+}): Promise<{ patient: CarePatient; temporaryPassword: string }> {
+  return request('/care/patients', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateCarePatientStatus(
+  email: string,
+  status: 'active' | 'suspended'
+): Promise<{ patient: CarePatient }> {
+  return request(`/care/patients/${encodeURIComponent(email)}/status`, {
+    method: 'PATCH',
+    body: JSON.stringify({ status }),
+  });
+}
+
 export async function listCareCases(): Promise<{ cases: CareCase[] }> {
   return request('/care/cases');
 }
@@ -123,8 +194,10 @@ export async function createCareCase(payload: {
   patientEmail: string;
   title: string;
   notes: string;
+  soapNotes?: CareCaseSoapNotes;
   studyStack?: CareCaseStudyStackEntry[];
   priorReports?: CareCasePriorReport[];
+  nextcloudShare?: CareCaseNextcloudShare | null;
 }): Promise<{ case: CareCase }> {
   return request('/care/cases', {
     method: 'POST',

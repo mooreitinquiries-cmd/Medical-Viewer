@@ -6,12 +6,23 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/context/AuthContext';
 import { ACCOUNT_STATUS_LABELS, ROLE_LABELS, validatePassword } from '@/lib/auth';
+import { showErrorToast } from '@/lib/errorToast';
+import {
+  disableTwoFactor,
+  startTwoFactorDisable,
+  startTwoFactorSetup,
+  verifyTwoFactorSetup,
+} from '@/lib/sessionApi';
 
 export default function AccountSettings() {
   const { user, changePassword } = useAuth();
   const [currentPassword, setCurrentPassword] = useState('');
   const [nextPassword, setNextPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
+  const [twoFactorChallengeId, setTwoFactorChallengeId] = useState('');
+  const [twoFactorMode, setTwoFactorMode] = useState<'setup' | 'disable' | null>(null);
+  const [twoFactorCode, setTwoFactorCode] = useState('');
+  const [twoFactorBusy, setTwoFactorBusy] = useState(false);
 
   if (!user) {
     return null;
@@ -37,7 +48,7 @@ export default function AccountSettings() {
     });
 
     if (!result.ok) {
-      toast.error(result.error || 'Could not update password');
+      showErrorToast(result.error, 'Could not update password');
       return;
     }
 
@@ -45,6 +56,40 @@ export default function AccountSettings() {
     setNextPassword('');
     setConfirmPassword('');
     toast.success('Password updated');
+  };
+
+  const startTwoFactorFlow = async (mode: 'setup' | 'disable') => {
+    setTwoFactorBusy(true);
+    try {
+      const challenge = mode === 'setup' ? await startTwoFactorSetup() : await startTwoFactorDisable();
+      setTwoFactorChallengeId(challenge.challengeId);
+      setTwoFactorMode(mode);
+      setTwoFactorCode('');
+      toast.success('Verification code sent');
+    } catch (error) {
+      showErrorToast(error, 'Could not send verification code');
+    } finally {
+      setTwoFactorBusy(false);
+    }
+  };
+
+  const submitTwoFactorCode = async () => {
+    if (!twoFactorChallengeId || !twoFactorMode) return;
+    setTwoFactorBusy(true);
+    try {
+      if (twoFactorMode === 'setup') {
+        await verifyTwoFactorSetup({ challengeId: twoFactorChallengeId, code: twoFactorCode });
+        toast.success('Two-factor authentication enabled');
+      } else {
+        await disableTwoFactor({ challengeId: twoFactorChallengeId, code: twoFactorCode });
+        toast.success('Two-factor authentication disabled');
+      }
+      window.location.reload();
+    } catch (error) {
+      showErrorToast(error, 'Could not verify code');
+    } finally {
+      setTwoFactorBusy(false);
+    }
   };
 
   return (
@@ -137,6 +182,54 @@ export default function AccountSettings() {
 
           <Button type="submit">Update Password</Button>
         </form>
+
+        <div className="space-y-4 rounded-xl border bg-card p-4 shadow-sm lg:col-span-2">
+          <div>
+            <div className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+              Two-Factor Authentication
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {user.twoFactor?.configured
+                ? 'Receive a verification code by email when signing in.'
+                : 'Email verification is not configured yet.'}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-end gap-3">
+            <Button
+              type="button"
+              variant={user.twoFactorEnabled ? 'outline' : 'default'}
+              disabled={twoFactorBusy || !user.twoFactor?.configured}
+              onClick={() => startTwoFactorFlow(user.twoFactorEnabled ? 'disable' : 'setup')}
+            >
+              {user.twoFactorEnabled ? 'Disable 2FA' : 'Set Up 2FA'}
+            </Button>
+
+            {twoFactorMode ? (
+              <div className="flex flex-wrap items-end gap-2">
+                <div className="space-y-2">
+                  <Label htmlFor="two-factor-code">Verification code</Label>
+                  <Input
+                    id="two-factor-code"
+                    inputMode="numeric"
+                    maxLength={6}
+                    value={twoFactorCode}
+                    onChange={(event) => setTwoFactorCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
+                    placeholder="000000"
+                  />
+                </div>
+                <Button
+                  type="button"
+                  variant="secondary"
+                  disabled={twoFactorBusy || twoFactorCode.length !== 6}
+                  onClick={submitTwoFactorCode}
+                >
+                  Verify
+                </Button>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </div>
     </div>
   );

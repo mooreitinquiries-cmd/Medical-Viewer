@@ -1,3 +1,5 @@
+import { AuthSessionError } from '@/lib/sessionApi';
+
 const configuredApiBase = import.meta.env.VITE_API?.trim();
 const DEFAULT_FRONTEND_ORIGIN = 'http://192.168.4.249:8080';
 const DEFAULT_STUDY_API_BASE = 'http://192.168.4.249:3001/api';
@@ -91,31 +93,105 @@ export function getMediaBaseUrl(): string {
 
 export interface Study {
   id: number;
+  tenant_id?: string | null;
+  tenantId?: string | null;
+  white_label_account_id?: string | null;
   patient_name?: string;
   patient_id?: string;
   patient_age?: string;
+  patient_dob?: string;
   patient_sex?: string;
   patient_zip?: string;
   study_date?: string;
+  octrqaui?: string;
+  octraccui?: string;
+  client_email?: string;
+  client_name?: string;
+  subclient?: string;
+  md_name?: string;
+  revenue?: string;
   modality?: string;
   notes?: string;
   tech_notes?: string | null;
+  radiologist_notes?: string | null;
+  radiology_report?: string | null;
   mp4_url?: string | null;
+  video_processing_status?: 'processing' | 'ready' | 'failed' | string | null;
+  video_processing_error?: string | null;
+  video_metadata?: {
+    duration?: number;
+    width?: number;
+    height?: number;
+    fps?: number;
+    keyframe_interval?: number;
+    thumbnail_interval_sec?: number;
+    thumbnail_paths?: string[];
+    playback_strategy?: 'hls' | 'mp4' | string;
+    hls?: {
+      master_playlist?: string;
+      segment_duration?: number;
+      variants?: Array<{
+        name: string;
+        height: number;
+        width?: number | null;
+        bandwidth?: number;
+        playlist?: string;
+      }>;
+    } | null;
+    processed_at?: string;
+    source_filename?: string | null;
+  } | null;
   pdf_url?: string | null;
   orthanc_patient_id?: string | null;
   orthanc_study_id?: string | null;
   dicom_count?: number;
   status?: string;
+  completed_at?: string | null;
+  completed_by_email?: string | null;
+  completed_by_name?: string | null;
+  recorded_by?: string | null;
+  transcribed_by?: string | null;
+  completion_note?: string | null;
+  reading_location?: ReadingLocation | null;
+  signoff_events?: SignoffEvent[];
   created_at?: string;
   share_token?: string | null;
   share_expires_at?: string | null;
   nextcloud_folder?: string | null;
   nextcloud_url?: string | null;
+  data_plan?: string | null;
+  hosted_by_octelerad?: boolean;
+  customer_download_required_by?: string | null;
+  retention_policy_applied_at?: string | null;
   prior_study_ids?: number[];
   live_streaming?: boolean;
   has_recording?: boolean;
   deleted_at?: string | null;
   case_reports?: CaseReport[];
+}
+
+export interface ReadingLocation {
+  country?: string | null;
+  state?: string | null;
+  zip_code?: string | null;
+  address?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+}
+
+export interface SignoffEvent {
+  id: string;
+  signed_at: string;
+  signed_by_email?: string | null;
+  signed_by_name?: string | null;
+  reading_location?: ReadingLocation | null;
+  browser_context?: {
+    ip?: string | null;
+    user_agent?: string | null;
+    timezone?: string | null;
+    language?: string | null;
+    platform?: string | null;
+  } | null;
 }
 
 export interface CaseReport {
@@ -133,15 +209,86 @@ export interface CaseReport {
   text?: string | null;
 }
 
+export interface AcronymEntry {
+  code: string;
+  diagnosis: string;
+  aliases?: string[];
+  chapter?: string;
+  client?: string;
+  source_doc_id?: string;
+  source_table_id?: string;
+  source_record_id?: string;
+  synced_at?: string;
+}
+
 export interface UploadStudyPayload {
   patient_name: string;
   patient_id?: string;
   patient_age?: string;
+  patient_dob?: string;
   patient_sex?: string;
   patient_zip?: string;
   study_date: string;
+  octrqaui?: string;
+  octraccui?: string;
+  client_email?: string;
+  client_name?: string;
+  subclient?: string;
+  md_name?: string;
+  revenue?: string;
   modality: string;
   notes: string;
+  tech_notes?: string;
+  radiologist_notes?: string;
+  radiology_report?: string;
+}
+
+export interface UpdateStudyPayload {
+  patient_name?: string;
+  patient_id?: string;
+  patient_age?: string;
+  patient_dob?: string;
+  patient_sex?: string;
+  patient_zip?: string;
+  study_date?: string;
+  octrqaui?: string;
+  octraccui?: string;
+  client_email?: string;
+  client_name?: string;
+  subclient?: string;
+  md_name?: string;
+  revenue?: string;
+  modality?: string;
+  notes?: string;
+  tech_notes?: string | null;
+  radiologist_notes?: string | null;
+  radiology_report?: string | null;
+  recorded_by?: string | null;
+  transcribed_by?: string | null;
+  base_updated_at?: string;
+}
+
+export interface StudyPresenceEntry {
+  client_id: string;
+  email?: string | null;
+  name?: string | null;
+  role?: string | null;
+  mode: 'viewing' | 'editing' | 'signoff' | string;
+  last_seen_at: string;
+  connected_at: string;
+}
+
+export interface StudyRealtimeEvent {
+  event: string;
+  study_id?: number;
+  study?: Study | null;
+  presence?: StudyPresenceEntry[];
+  updated_at?: string;
+  source?: string;
+  recordings_count?: number;
+  latest_recording?: CaseRecording | null;
+  live_session?: LiveCaseSession | null;
+  [key: string]: unknown;
 }
 
 export interface UploadResult {
@@ -181,6 +328,14 @@ export interface UploadProgressState {
   totalBatches?: number;
 }
 
+interface DicomUploadOptions {
+  onProgress?: (state: UploadProgressState) => void;
+  convertJpeg2000ToDcm?: boolean;
+  conversionToken?: string;
+  redactTextOnUpload?: boolean;
+  auth?: StudyApiAuthContext;
+}
+
 export interface DicomPreconvertResult {
   ok: boolean;
   conversion_token: string;
@@ -213,11 +368,15 @@ export interface CaseStreamJob {
   requested_study_ids?: number[];
   fps?: number;
   max_frames?: number;
+  total_frames?: number;
+  frame_review_url?: string | null;
   timeline?: Array<{
     index: number;
     study_id: number;
     label: string;
     frame_count: number;
+    start_frame?: number;
+    end_frame?: number;
     start_sec: number;
     end_sec: number;
   }>;
@@ -240,10 +399,21 @@ export interface CaseStreamLibraryItem {
   name: string;
   created_at: string;
   updated_at: string;
+  assigned_md_email?: string | null;
+  assigned_md_name?: string | null;
+  assigned_at?: string | null;
+  assigned_by_email?: string | null;
+  assigned_by_name?: string | null;
+  reading_status?: 'unassigned' | 'assigned' | 'in_review' | 'read' | 'completed';
+  reading_status_updated_at?: string | null;
+  reading_status_updated_by_email?: string | null;
+  reading_status_updated_by_name?: string | null;
   filename?: string | null;
   file_size?: number;
   fps?: number;
   requested_study_ids?: number[];
+  total_frames?: number;
+  frame_review_url?: string | null;
   presentation_case_count?: number;
   video_available?: boolean;
   download_url?: string | null;
@@ -252,6 +422,8 @@ export interface CaseStreamLibraryItem {
     study_id: number;
     label: string;
     frame_count: number;
+    start_frame?: number;
+    end_frame?: number;
     start_sec: number;
     end_sec: number;
   }>;
@@ -264,6 +436,9 @@ export interface CaseStreamPresentationCase {
   start_sec: number;
   end_sec: number;
   duration_sec: number;
+  frame_count?: number;
+  start_frame?: number | null;
+  end_frame?: number | null;
 }
 
 export interface CaseStreamPresentationManifest {
@@ -272,6 +447,7 @@ export interface CaseStreamPresentationManifest {
   name: string;
   video_url?: string | null;
   fps?: number;
+  total_frames?: number;
   requested_study_ids?: number[];
   case_count: number;
   cases: CaseStreamPresentationCase[];
@@ -281,6 +457,10 @@ export interface StudyApiAuthContext {
   email?: string;
   role?: string;
   name?: string;
+  isSuperAdmin?: boolean;
+  whiteLabelAccountIds?: string[];
+  primaryWhiteLabelAccountId?: string | null;
+  whiteLabelAccessLevel?: string | null;
 }
 
 interface CaseStreamRequestOptions {
@@ -323,6 +503,42 @@ export interface CaseReportUploadItem {
   created_at?: string;
 }
 
+export interface PatientSummaryExportPayload {
+  patientEmail: string;
+  patientName?: string;
+  title: string;
+  notes: string;
+  soapNotes?: SoapNotesPayload;
+  studyStack?: Array<{
+    studyId: number;
+    relation: 'prior' | 'current';
+    order: number;
+  }>;
+  priorReports?: Array<{
+    url: string;
+    filename?: string;
+    sourceStudyId?: number | null;
+    createdAt?: string;
+  }>;
+}
+
+export interface SoapNotesPayload {
+  subjective?: string;
+  objective?: string;
+  assessment?: string;
+  plan?: string;
+}
+
+export interface PatientSummaryExportResult {
+  ok: boolean;
+  folder: string;
+  url: string;
+  study_count: number;
+  report_count: number;
+  requested_report_count: number;
+  dicom_exported: number;
+}
+
 export interface LiveCaseSession {
   id: string;
   study_id: number;
@@ -331,6 +547,85 @@ export interface LiveCaseSession {
   ended_at?: string | null;
   started_by_email?: string | null;
   started_by_name?: string | null;
+}
+
+export interface StorageStatus {
+  ok: boolean;
+  available: boolean;
+  path?: string;
+  total_bytes?: number;
+  used_bytes?: number;
+  free_bytes?: number;
+  available_bytes?: number;
+  used_percent?: number;
+  warning_threshold_used_percent?: number;
+  warning?: boolean;
+  warning_message?: string;
+  message?: string;
+}
+
+export interface RevenueAdjustment {
+  id: string;
+  date: string;
+  amount: number;
+  label: string;
+  client_name?: string | null;
+  subclient?: string | null;
+  notes?: string | null;
+  created_by_email?: string | null;
+  created_by_name?: string | null;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface FormSubmissionField {
+  key: string;
+  value: string;
+}
+
+export interface FormSubmission {
+  id: string;
+  type: 'patient' | 'clinic' | 'other' | string;
+  patient_identifier?: string | null;
+  patient_lookup_url?: string | null;
+  display_name: string;
+  email?: string | null;
+  phone?: string | null;
+  source?: string | null;
+  form_name?: string | null;
+  submitted_name?: string;
+  submission_subject_type?: string;
+  submitted_at?: string | null;
+  nextcloud_study_url?: string | null;
+  matched_study_id?: string | null;
+  matched_study_name?: string | null;
+  payload: Record<string, unknown>;
+  fields: FormSubmissionField[];
+  created_at: string;
+  updated_at?: string;
+  received_from_ip?: string | null;
+}
+
+export interface UpcomingPatient {
+  id: string;
+  patient_identifier?: string | null;
+  patient_lookup_url?: string | null;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  source?: string | null;
+  form_name?: string | null;
+  submitted_at?: string | null;
+  updated_at?: string | null;
+  fields?: FormSubmissionField[];
+  payload?: Record<string, unknown>;
+}
+
+export interface FormSubmissionSyncResult {
+  fetched: number;
+  created: number;
+  updated: number;
+  total: number;
 }
 
 /* ===================== HELPERS ===================== */
@@ -446,6 +741,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
         continue;
       }
 
+      if (res.status === 401) {
+        throw new AuthSessionError(errorMessage);
+      }
+
       throw new Error(errorMessage);
     } catch (error) {
       if (!(error instanceof Error)) {
@@ -483,8 +782,10 @@ function headersToPlainObject(headers?: HeadersInit): Record<string, string> {
   return { ...headers };
 }
 
-const DEFAULT_DICOM_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
-const DEFAULT_DICOM_UPLOAD_BATCH_MAX_BYTES = 75 * 1024 * 1024;
+const DEFAULT_DICOM_UPLOAD_TIMEOUT_MS = 30 * 60 * 1000;
+const CASE_STREAM_DOWNLOAD_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_DICOM_UPLOAD_BATCH_MAX_BYTES = 512 * 1024 * 1024;
+const DICOM_UPLOAD_NETWORK_RETRIES = 2;
 
 function parsePositiveNumber(value: unknown, fallback: number): number {
   const parsed = Number(value);
@@ -513,7 +814,7 @@ function createDicomUploadBatches(files: File[], maxFiles: number, maxBytes: num
 
   files.forEach((file) => {
     const fileSize = file.size || 0;
-    const shouldIsolateLargeFile = fileSize >= maxBytes / 2;
+    const shouldIsolateLargeFile = fileSize > maxBytes;
 
     if (shouldIsolateLargeFile) {
       if (currentBatch.length > 0) {
@@ -546,6 +847,19 @@ function createDicomUploadBatches(files: File[], maxFiles: number, maxBytes: num
   return batches;
 }
 
+function advanceUploadProcessingPercent(current: number, target: number, startedAt: number): number {
+  const elapsedMs = Date.now() - startedAt;
+  const timeBasedProgress = Math.floor(elapsedMs / 2500);
+  return Math.min(target, Math.max(current + 1, current + timeBasedProgress));
+}
+
+function isRetryableMultipartUploadError(error: unknown): boolean {
+  if (error instanceof TypeError) return true;
+  if (!(error instanceof Error)) return false;
+  const message = error.message.toLowerCase();
+  return message.includes('timed out') || message.includes('network') || message.includes('failed to fetch');
+}
+
 async function requestMultipartWithUploadProgress<T>(
   path: string,
   formData: FormData,
@@ -573,8 +887,9 @@ async function requestMultipartWithUploadProgress<T>(
     const baseUrl = baseCandidates[index];
     const hasNextCandidate = index < baseCandidates.length - 1;
 
-    try {
-      const result = await new Promise<T>((resolve, reject) => {
+    for (let attempt = 0; attempt <= DICOM_UPLOAD_NETWORK_RETRIES; attempt += 1) {
+      try {
+        const result = await new Promise<T>((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open('POST', `${baseUrl}${path}`, true);
         xhr.withCredentials = true;
@@ -635,16 +950,24 @@ async function requestMultipartWithUploadProgress<T>(
         xhr.send(formData);
       });
 
-      return result;
-    } catch (error) {
-      if (error instanceof TypeError && hasNextCandidate) {
-        lastError = error.message.includes('non-JSON')
-          ? new Error(error.message)
-          : formatApiNetworkError();
-        continue;
+        return result;
+      } catch (error) {
+        const hasRetry = attempt < DICOM_UPLOAD_NETWORK_RETRIES;
+        if (hasRetry && isRetryableMultipartUploadError(error)) {
+          lastError = error instanceof Error ? error : new Error('DICOM upload failed.');
+          await sleep(1000 * (attempt + 1));
+          continue;
+        }
+
+        if (error instanceof TypeError && hasNextCandidate) {
+          lastError = error.message.includes('non-JSON')
+            ? new Error(error.message)
+            : formatApiNetworkError();
+          break;
+        }
+        if (error instanceof Error) throw error;
+        throw new Error('Study API request failed');
       }
-      if (error instanceof Error) throw error;
-      throw new Error('Study API request failed');
     }
   }
 
@@ -679,61 +1002,27 @@ function normalizeStudiesPayload(payload: unknown): Study[] {
   return [];
 }
 
-/* ===================== UPLOAD ===================== */
-
-export async function uploadStudy(
-  payload: UploadStudyPayload,
+async function uploadDicomFilesToStudy(
+  studyId: number,
   dicomFiles: File[],
-  mp4File?: File | null,
-  pdfFile?: File | null,
-  options?: {
-    onProgress?: (state: UploadProgressState) => void;
-    convertJpeg2000ToDcm?: boolean;
-    conversionToken?: string;
-    redactTextOnUpload?: boolean;
-    auth?: StudyApiAuthContext;
-  }
+  options?: DicomUploadOptions
 ): Promise<UploadResult> {
   const onProgress = options?.onProgress;
   const authHeaders = buildStudyApiAuthHeaders(options?.auth);
   const totalFiles = dicomFiles.length;
   const hasConversionToken = Boolean(options?.conversionToken);
   const batchSize = Math.max(
-    50,
-    Math.min(Number(import.meta.env.VITE_DICOM_UPLOAD_BATCH_SIZE || 500), 500)
+    10,
+    Math.min(Number(import.meta.env.VITE_DICOM_UPLOAD_BATCH_SIZE || 100), 1000)
   );
   const batchMaxBytes = getDicomUploadBatchMaxBytes();
-
-  onProgress?.({
-    stage: 'creating_study',
-    percent: 2,
-    message: 'Creating study record...',
-    totalFiles,
-    processedFiles: 0,
-    filesRemaining: totalFiles,
-  });
-
-  const study = await request<Study>('/studies', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', ...authHeaders },
-    body: JSON.stringify({
-      patient_name: payload.patient_name || '',
-      patient_id: payload.patient_id || '',
-      patient_age: payload.patient_age || '',
-      patient_sex: payload.patient_sex || '',
-      patient_zip: payload.patient_zip || '',
-      study_date: payload.study_date || '',
-      modality: payload.modality || '',
-      notes: payload.notes || '',
-    }),
-  });
 
   const uploadToStudy = async (
     formData: FormData,
     onUploadProgress?: (loaded: number, total: number) => void,
     uploadLabel?: string
   ) =>
-    requestMultipartWithUploadProgress<UploadResult>(`/studies/${study.id}/dicom`, formData, {
+    requestMultipartWithUploadProgress<UploadResult>(`/studies/${studyId}/dicom`, formData, {
       headers: authHeaders,
       onUploadProgress,
       uploadLabel,
@@ -767,8 +1056,9 @@ export async function uploadStudy(
     });
 
     let tokenPercent = 10;
+    const tokenProcessingStartedAt = Date.now();
     const tokenProcessingTimer = window.setInterval(() => {
-      tokenPercent = Math.min(89, tokenPercent + 1);
+      tokenPercent = advanceUploadProcessingPercent(tokenPercent, 89, tokenProcessingStartedAt);
       onProgress?.({
         stage: 'uploading_dicom',
         percent: tokenPercent,
@@ -840,11 +1130,16 @@ export async function uploadStudy(
       const batchCompletePercent = Math.round(
         5 + ((processedFiles + batchFiles.length) / Math.max(totalFiles, 1)) * 85
       );
-      const maxProcessingPercent = Math.max(percent, batchCompletePercent - 1);
+      const maxProcessingPercent = Math.max(percent, batchCompletePercent);
       let currentBatchPercent = percent;
       let currentBatchUploadComplete = false;
+      const batchProcessingStartedAt = Date.now();
       const batchProcessingTimer = window.setInterval(() => {
-        currentBatchPercent = Math.min(maxProcessingPercent, currentBatchPercent + 1);
+        currentBatchPercent = advanceUploadProcessingPercent(
+          currentBatchPercent,
+          maxProcessingPercent,
+          batchProcessingStartedAt
+        );
         onProgress?.({
           stage: 'uploading_dicom',
           percent: currentBatchPercent,
@@ -911,9 +1206,8 @@ export async function uploadStudy(
   if (!dicomData) {
     dicomData = {
       ok: true,
-      study_id: study.id,
+      study_id: studyId,
       dicom_count: 0,
-      study,
       dicom_converted_count: 0,
       dicom_redacted_count: 0,
       dicom_redaction_failed_count: 0,
@@ -924,12 +1218,107 @@ export async function uploadStudy(
     };
   }
 
+  return {
+    ...dicomData,
+    study_id: studyId,
+    dicom_converted_count: hasConversionToken
+      ? dicomData.dicom_converted_count
+      : totalConvertedCount,
+    dicom_redacted_count: hasConversionToken
+      ? dicomData.dicom_redacted_count
+      : totalRedactedCount,
+    dicom_redaction_failed_count: hasConversionToken
+      ? dicomData.dicom_redaction_failed_count
+      : totalRedactionFailedCount,
+    dicom_failed_count: hasConversionToken
+      ? dicomData.dicom_failed_count
+      : totalFailedCount,
+    dicom_converted_files: hasConversionToken
+      ? dicomData.dicom_converted_files
+      : convertedFiles.slice(0, 20),
+    dicom_redaction_failed_files: hasConversionToken
+      ? dicomData.dicom_redaction_failed_files
+      : redactionFailedFiles.slice(0, 20),
+    dicom_failed_files: hasConversionToken
+      ? dicomData.dicom_failed_files
+      : failedFiles.slice(0, 20),
+  };
+}
+
+/* ===================== UPLOAD ===================== */
+
+export async function uploadDicomToStudy(
+  studyId: number | string,
+  dicomFiles: File[],
+  options?: DicomUploadOptions
+): Promise<UploadResult> {
+  const numericStudyId = Number(studyId);
+  if (!Number.isFinite(numericStudyId) || numericStudyId <= 0) {
+    throw new Error('A valid study ID is required before uploading DICOM files.');
+  }
+  if (!dicomFiles.length && !options?.conversionToken) {
+    throw new Error('Select DICOM files before uploading.');
+  }
+
+  return uploadDicomFilesToStudy(numericStudyId, dicomFiles, options);
+}
+
+export async function uploadStudy(
+  payload: UploadStudyPayload,
+  dicomFiles: File[],
+  mp4File?: File | null,
+  pdfFile?: File | null,
+  options?: DicomUploadOptions
+): Promise<UploadResult> {
+  const onProgress = options?.onProgress;
+  const authHeaders = buildStudyApiAuthHeaders(options?.auth);
+  const totalFiles = dicomFiles.length;
+  const hasConversionToken = Boolean(options?.conversionToken);
+
+  onProgress?.({
+    stage: 'creating_study',
+    percent: 2,
+    message: 'Creating study record...',
+    totalFiles,
+    processedFiles: 0,
+    filesRemaining: totalFiles,
+  });
+
+  const study = await request<Study>('/studies', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...authHeaders },
+    body: JSON.stringify({
+      patient_name: payload.patient_name || '',
+      patient_id: payload.patient_id || '',
+      patient_age: payload.patient_age || '',
+      patient_dob: payload.patient_dob || '',
+      patient_sex: payload.patient_sex || '',
+      patient_zip: payload.patient_zip || '',
+      study_date: payload.study_date || '',
+      octrqaui: payload.octrqaui || '',
+      octraccui: payload.octraccui || '',
+      client_email: payload.client_email || '',
+      client_name: payload.client_name || '',
+      subclient: payload.subclient || '',
+      md_name: payload.md_name || '',
+      revenue: payload.revenue || '',
+      modality: payload.modality || '',
+      notes: payload.notes || '',
+      tech_notes: payload.tech_notes || '',
+      radiologist_notes: payload.radiologist_notes || '',
+      radiology_report: payload.radiology_report || '',
+    }),
+  });
+
+  const dicomData = await uploadDicomFilesToStudy(study.id, dicomFiles, options);
+  const processedFiles = dicomFiles.length;
+
   // Upload MP4 (optional)
   if (mp4File && study.id) {
     onProgress?.({
       stage: 'uploading_mp4',
       percent: 92,
-      message: 'Uploading MP4 attachment...',
+      message: 'Uploading video for backend optimization...',
       totalFiles,
       processedFiles: processedFiles || totalFiles,
       filesRemaining: Math.max(0, totalFiles - (processedFiles || totalFiles)),
@@ -968,7 +1357,7 @@ export async function uploadStudy(
   onProgress?.({
     stage: 'finalizing',
     percent: 100,
-    message: 'Upload complete.',
+    message: mp4File ? 'Upload complete. Video optimization is processing in the background.' : 'Upload complete.',
     totalFiles,
     processedFiles: processedFiles || totalFiles,
     filesRemaining: 0,
@@ -977,27 +1366,6 @@ export async function uploadStudy(
   return {
     ...dicomData,
     study_id: study.id,
-    dicom_converted_count: hasConversionToken
-      ? dicomData.dicom_converted_count
-      : totalConvertedCount,
-    dicom_redacted_count: hasConversionToken
-      ? dicomData.dicom_redacted_count
-      : totalRedactedCount,
-    dicom_redaction_failed_count: hasConversionToken
-      ? dicomData.dicom_redaction_failed_count
-      : totalRedactionFailedCount,
-    dicom_failed_count: hasConversionToken
-      ? dicomData.dicom_failed_count
-      : totalFailedCount,
-    dicom_converted_files: hasConversionToken
-      ? dicomData.dicom_converted_files
-      : convertedFiles.slice(0, 20),
-    dicom_redaction_failed_files: hasConversionToken
-      ? dicomData.dicom_redaction_failed_files
-      : redactionFailedFiles.slice(0, 20),
-    dicom_failed_files: hasConversionToken
-      ? dicomData.dicom_failed_files
-      : failedFiles.slice(0, 20),
   };
 }
 
@@ -1024,6 +1392,123 @@ export async function preconvertDicomFiles(
 
 /* ===================== STUDIES ===================== */
 
+export async function fetchStorageStatus(options?: { auth?: StudyApiAuthContext }): Promise<StorageStatus> {
+  const authHeaders = buildStudyApiAuthHeaders(options?.auth);
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutId = controller
+    ? globalThis.setTimeout(() => controller.abort(), 2500)
+    : 0;
+
+  try {
+    return request<StorageStatus>(
+      '/storage',
+      {
+        ...(Object.keys(authHeaders).length > 0 ? { headers: authHeaders } : {}),
+        ...(controller ? { signal: controller.signal } : {}),
+      }
+    );
+  } finally {
+    if (timeoutId) {
+      globalThis.clearTimeout(timeoutId);
+    }
+  }
+}
+
+export async function listRevenueAdjustments(options?: {
+  auth?: StudyApiAuthContext;
+}): Promise<RevenueAdjustment[]> {
+  const payload = await request<{ ok?: boolean; adjustments?: RevenueAdjustment[] }>('/revenue/adjustments', {
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+  return Array.isArray(payload.adjustments) ? payload.adjustments : [];
+}
+
+export async function addRevenueAdjustment(
+  payload: {
+    date: string;
+    amount: number;
+    label: string;
+    client_name?: string;
+    subclient?: string;
+    notes?: string;
+  },
+  options?: { auth?: StudyApiAuthContext }
+): Promise<RevenueAdjustment> {
+  const response = await request<{ ok?: boolean; adjustment?: RevenueAdjustment }>('/revenue/adjustments', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify(payload),
+  });
+  if (!response.adjustment) throw new Error('Revenue adjustment was not saved.');
+  return response.adjustment;
+}
+
+export async function deleteRevenueAdjustment(
+  id: string,
+  options?: { auth?: StudyApiAuthContext }
+): Promise<void> {
+  await request(`/revenue/adjustments/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+}
+
+export async function listFormSubmissions(options?: {
+  auth?: StudyApiAuthContext;
+  type?: string;
+  q?: string;
+  limit?: number;
+}): Promise<FormSubmission[]> {
+  const query = new URLSearchParams();
+  if (options?.type && options.type !== 'all') query.set('type', options.type);
+  if (options?.q?.trim()) query.set('q', options.q.trim());
+  if (options?.limit) query.set('limit', String(options.limit));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const payload = await request<{ ok?: boolean; submissions?: FormSubmission[] }>(`/form-submissions${suffix}`, {
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+  return Array.isArray(payload.submissions) ? payload.submissions : [];
+}
+
+export async function syncFormSubmissions(options?: {
+  auth?: StudyApiAuthContext;
+}): Promise<FormSubmissionSyncResult> {
+  const payload = await request<{ ok?: boolean } & Partial<FormSubmissionSyncResult>>('/form-submissions/sync', {
+    method: 'POST',
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+  return {
+    fetched: Number(payload.fetched) || 0,
+    created: Number(payload.created) || 0,
+    updated: Number(payload.updated) || 0,
+    total: Number(payload.total) || 0,
+  };
+}
+
+export async function listUpcomingPatients(options?: {
+  auth?: StudyApiAuthContext;
+  q?: string;
+  limit?: number;
+  sync?: boolean;
+}): Promise<{ upcomingPatients: UpcomingPatient[]; sync?: Partial<FormSubmissionSyncResult> | null }> {
+  const query = new URLSearchParams();
+  if (options?.q?.trim()) query.set('q', options.q.trim());
+  if (options?.limit) query.set('limit', String(options.limit));
+  if (options?.sync) query.set('sync', '1');
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const payload = await request<{
+    ok?: boolean;
+    upcoming_patients?: UpcomingPatient[];
+    sync?: Partial<FormSubmissionSyncResult> | null;
+  }>(`/upcoming-patients${suffix}`, {
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+  return {
+    upcomingPatients: Array.isArray(payload.upcoming_patients) ? payload.upcoming_patients : [],
+    sync: payload.sync || null,
+  };
+}
+
 export async function fetchStudies(options?: {
   includeDeleted?: boolean;
   deletedOnly?: boolean;
@@ -1041,6 +1526,125 @@ export async function fetchStudies(options?: {
   return normalizeStudiesPayload(data);
 }
 
+export interface TenantGovernanceStudy {
+  id: number;
+  tenant_id?: string | null;
+  patient_name?: string | null;
+  patient_id?: string | null;
+  modality?: string | null;
+  study_date?: string | null;
+  created_at?: string | null;
+  nextcloud_url?: string | null;
+  nextcloud_export_status?: string | null;
+  local_media_bytes?: number;
+  orthanc_storage_bytes?: number;
+  orthanc_uncompressed_bytes?: number;
+  orthanc_storage_status?: string | null;
+  orthanc_storage_refreshed_at?: string | null;
+  total_storage_bytes?: number;
+  plan_id: string;
+  hosted_by_octelerad: boolean;
+  requires_customer_download: boolean;
+  customer_download_required_by?: string | null;
+}
+
+export interface TenantAuditEvent {
+  ts: string;
+  event: string;
+  tenant_id?: string | null;
+  study_id?: number | null;
+  actor_email?: string | null;
+  actor_role?: string | null;
+  action?: string | null;
+  result?: string;
+  details?: Record<string, unknown>;
+}
+
+export interface TenantGovernanceSummary {
+  tenant_id?: string | null;
+  name: string;
+  slug?: string | null;
+  status: string;
+  plan_id: string;
+  plan_label: string;
+  hosted_by_octelerad: boolean;
+  requires_customer_download: boolean;
+  retention_days?: number | null;
+  study_count: number;
+  active_study_count: number;
+  deleted_study_count: number;
+  dicom_count: number;
+  local_media_bytes: number;
+  orthanc_storage_bytes: number;
+  orthanc_uncompressed_bytes: number;
+  total_storage_bytes: number;
+  orthanc_storage_cached_count: number;
+  orthanc_storage_missing_count: number;
+  orthanc_storage_error_count: number;
+  nextcloud_exported_count: number;
+  due_within_24h_count: number;
+  overdue_count: number;
+  downloaded_count: number;
+  oldest_download_deadline?: string | null;
+  newest_study_at?: string | null;
+}
+
+export async function fetchTenantGovernanceStudies(options?: {
+  auth?: StudyApiAuthContext;
+}): Promise<TenantGovernanceStudy[]> {
+  const payload = await request<{ ok?: boolean; studies?: TenantGovernanceStudy[] }>('/tenant-governance/studies', {
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+  return Array.isArray(payload.studies) ? payload.studies : [];
+}
+
+export async function fetchTenantGovernanceSummaries(options?: {
+  auth?: StudyApiAuthContext;
+}): Promise<TenantGovernanceSummary[]> {
+  const payload = await request<{ ok?: boolean; tenants?: TenantGovernanceSummary[] }>('/tenant-governance/tenants', {
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+  return Array.isArray(payload.tenants) ? payload.tenants : [];
+}
+
+export async function fetchTenantAuditEvents(options?: {
+  auth?: StudyApiAuthContext;
+  tenantId?: string;
+  limit?: number;
+}): Promise<TenantAuditEvent[]> {
+  const query = new URLSearchParams();
+  if (options?.tenantId) query.set('tenant_id', options.tenantId);
+  if (options?.limit) query.set('limit', String(options.limit));
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  const payload = await request<{ ok?: boolean; events?: TenantAuditEvent[] }>(`/tenant-governance/audit${suffix}`, {
+    headers: buildStudyApiAuthHeaders(options?.auth),
+  });
+  return Array.isArray(payload.events) ? payload.events : [];
+}
+
+export async function refreshOrthancStorageAccounting(options?: {
+  auth?: StudyApiAuthContext;
+  tenantId?: string | null;
+}): Promise<{ ok: boolean; requested: number; refreshed: number; failed: number }> {
+  return request('/tenant-governance/orthanc-storage/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify(options?.tenantId ? { tenant_id: options.tenantId } : {}),
+  });
+}
+
+export async function updateStudyRetention(
+  studyId: string | number,
+  payload: { action: 'mark_downloaded' } | { action: 'extend_deadline'; days: number; reason?: string },
+  options?: { auth?: StudyApiAuthContext }
+): Promise<{ ok: boolean; study: Study; retention?: Record<string, unknown> }> {
+  return request(`/tenant-governance/studies/${encodeURIComponent(String(studyId))}/retention`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function createStudyRecord(payload: UploadStudyPayload): Promise<Study> {
   const response = await request<{ ok?: boolean; study?: Study }>('/studies', {
     method: 'POST',
@@ -1049,11 +1653,22 @@ export async function createStudyRecord(payload: UploadStudyPayload): Promise<St
       patient_name: payload.patient_name || '',
       patient_id: payload.patient_id || '',
       patient_age: payload.patient_age || '',
+      patient_dob: payload.patient_dob || '',
       patient_sex: payload.patient_sex || '',
       patient_zip: payload.patient_zip || '',
       study_date: payload.study_date || '',
+      octrqaui: payload.octrqaui || '',
+      octraccui: payload.octraccui || '',
+      client_email: payload.client_email || '',
+      client_name: payload.client_name || '',
+      subclient: payload.subclient || '',
+      md_name: payload.md_name || '',
+      revenue: payload.revenue || '',
       modality: payload.modality || '',
       notes: payload.notes || '',
+      tech_notes: payload.tech_notes || '',
+      radiologist_notes: payload.radiologist_notes || '',
+      radiology_report: payload.radiology_report || '',
     }),
   });
 
@@ -1068,11 +1683,22 @@ export async function startLiveCase(payload: {
   study_id?: number;
   patient_name?: string;
   patient_age?: string;
+  patient_dob?: string;
   patient_sex?: string;
   patient_zip?: string;
   study_date?: string;
+  octrqaui?: string;
+  octraccui?: string;
+  client_email?: string;
+  client_name?: string;
+  subclient?: string;
+  md_name?: string;
+  revenue?: string;
   modality?: string;
   notes?: string;
+  tech_notes?: string;
+  radiologist_notes?: string;
+  radiology_report?: string;
   started_by_email?: string;
   started_by_name?: string;
 }, options?: { auth?: StudyApiAuthContext }): Promise<{ session: LiveCaseSession; study: Study }> {
@@ -1166,6 +1792,57 @@ export async function fetchStudyById(
   });
 }
 
+export async function updateStudy(
+  id: string | number,
+  payload: UpdateStudyPayload,
+  options?: { auth?: StudyApiAuthContext; baseUpdatedAt?: string }
+): Promise<{ ok: boolean; study: Study }> {
+  return request(`/studies/${id}`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify({
+      ...payload,
+      base_updated_at: options?.baseUpdatedAt || payload.base_updated_at,
+    }),
+  });
+}
+
+export async function completeStudy(
+  id: string | number,
+  payload?: {
+    radiology_report?: string;
+    completion_note?: string;
+    recorded_by?: string;
+    transcribed_by?: string;
+    reading_location?: ReadingLocation;
+    browser_context?: {
+      user_agent?: string;
+      timezone?: string;
+      language?: string;
+      platform?: string;
+    };
+  },
+  options?: { auth?: StudyApiAuthContext; baseUpdatedAt?: string }
+): Promise<{ ok: boolean; study: Study }> {
+  return request(`/studies/${id}/complete`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify({
+      ...(payload || {}),
+      base_updated_at: options?.baseUpdatedAt || (payload as { base_updated_at?: string } | undefined)?.base_updated_at,
+    }),
+  });
+}
+
+export async function fetchAcronym(code: string): Promise<{ ok: boolean; acronym: AcronymEntry }> {
+  return request(`/acronyms/${encodeURIComponent(code)}`);
+}
+
+export async function searchAcronyms(query: string): Promise<{ ok: boolean; count: number; results: AcronymEntry[] }> {
+  const suffix = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : '';
+  return request(`/acronyms${suffix}`);
+}
+
 export async function fetchStudyPriors(
   id: string | number,
   options?: { auth?: StudyApiAuthContext }
@@ -1178,24 +1855,30 @@ export async function fetchStudyPriors(
 export async function updateStudyPriors(
   id: string | number,
   priorStudyIds: Array<string | number>,
-  options?: { auth?: StudyApiAuthContext }
+  options?: { auth?: StudyApiAuthContext; baseUpdatedAt?: string }
 ): Promise<{ ok: boolean; study_id: number; prior_study_ids: number[]; priors: Study[]; study: Study }> {
   return request(`/studies/${id}/priors`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
-    body: JSON.stringify({ prior_study_ids: priorStudyIds }),
+    body: JSON.stringify({
+      prior_study_ids: priorStudyIds,
+      base_updated_at: options?.baseUpdatedAt,
+    }),
   });
 }
 
 export async function updateStudyTechNotes(
   id: string | number,
   techNotes: string,
-  options?: { auth?: StudyApiAuthContext }
+  options?: { auth?: StudyApiAuthContext; baseUpdatedAt?: string }
 ): Promise<{ ok: boolean; study: Study }> {
   return request(`/studies/${id}/tech-notes`, {
     method: 'PUT',
     headers: { 'content-type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
-    body: JSON.stringify({ tech_notes: techNotes }),
+    body: JSON.stringify({
+      tech_notes: techNotes,
+      base_updated_at: options?.baseUpdatedAt,
+    }),
   });
 }
 
@@ -1216,6 +1899,7 @@ export async function addStudyReport(
     reportType?: string;
     textReport?: string;
     file?: File | null;
+    baseUpdatedAt?: string;
   },
   options?: { auth?: StudyApiAuthContext }
 ): Promise<{ ok: boolean; report: CaseReport; reports: CaseReport[]; study: Study }> {
@@ -1225,8 +1909,35 @@ export async function addStudyReport(
   if (payload.reportType) formData.append('report_type', payload.reportType);
   if (payload.textReport) formData.append('text_report', payload.textReport);
   if (payload.file) formData.append('report_file', payload.file);
+  if (payload.baseUpdatedAt) formData.append('base_updated_at', payload.baseUpdatedAt);
 
   return request(`/studies/${id}/reports`, {
+    method: 'POST',
+    headers: buildStudyApiAuthHeaders(options?.auth),
+    body: formData,
+  });
+}
+
+export async function uploadStudyDictation(
+  id: string | number,
+  payload: {
+    audioFile: Blob;
+    transcript?: string;
+    title?: string;
+    caseLabel?: string;
+    baseUpdatedAt?: string;
+  },
+  options?: { auth?: StudyApiAuthContext }
+): Promise<{ ok: boolean; report: CaseReport; reports: CaseReport[]; study: Study }> {
+  const formData = new FormData();
+  const filename = payload.audioFile instanceof File ? payload.audioFile.name : `dictation-${Date.now()}.webm`;
+  formData.append('audio_file', payload.audioFile, filename);
+  if (payload.transcript) formData.append('transcript', payload.transcript);
+  if (payload.title) formData.append('title', payload.title);
+  if (payload.caseLabel) formData.append('case_label', payload.caseLabel);
+  if (payload.baseUpdatedAt) formData.append('base_updated_at', payload.baseUpdatedAt);
+
+  return request(`/studies/${id}/dictations`, {
     method: 'POST',
     headers: buildStudyApiAuthHeaders(options?.auth),
     body: formData,
@@ -1356,6 +2067,17 @@ export async function exportToCloud(
   });
 }
 
+export async function exportPatientSummaryToCloud(
+  payload: PatientSummaryExportPayload,
+  options?: { auth?: StudyApiAuthContext }
+): Promise<PatientSummaryExportResult> {
+  return request('/patient-summaries/export-nextcloud', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify(payload),
+  });
+}
+
 function parseAttachmentFilename(contentDisposition: string | null) {
   if (!contentDisposition) return '';
   const match = contentDisposition.match(/filename="?([^";]+)"?/i);
@@ -1406,6 +2128,10 @@ export async function exportCaseStream(
       if (hasNextCandidate && isProxyLikeApiBase(baseUrl) && res.status === 404) {
         lastError = new Error(message);
         continue;
+      }
+
+      if (res.status === 401) {
+        throw new AuthSessionError(message);
       }
 
       throw new Error(message);
@@ -1482,12 +2208,20 @@ export async function downloadCaseStreamJob(
   for (let index = 0; index < baseCandidates.length; index += 1) {
     const baseUrl = baseCandidates[index];
     const hasNextCandidate = index < baseCandidates.length - 1;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     try {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), CASE_STREAM_DOWNLOAD_TIMEOUT_MS);
       const res = await fetch(`${baseUrl}/case-stream/jobs/${encodeURIComponent(jobId)}/download`, {
         method: 'GET',
         headers: authHeaders,
+        signal: controller.signal,
       });
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
 
       if (res.ok) {
         const filename = parseAttachmentFilename(res.headers.get('content-disposition')) || `case-stream-${jobId}.mp4`;
@@ -1503,10 +2237,21 @@ export async function downloadCaseStreamJob(
         lastError = new Error(message);
         continue;
       }
+      if (res.status === 401) {
+        throw new AuthSessionError(message);
+      }
       throw new Error(message);
     } catch (error) {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       if (!(error instanceof Error)) {
         lastError = new Error('Case stream download failed');
+        continue;
+      }
+
+      if (error instanceof Error && error.name === 'AbortError') {
+        lastError = new Error('Case stream download timed out. Please try downloading again.');
         continue;
       }
 
@@ -1555,6 +2300,44 @@ export async function listSavedCaseStreams(options?: {
   return Array.isArray(payload?.streams) ? payload.streams : [];
 }
 
+export function getCaseStreamJobFrameUrl(jobId: string, frameIndex: number): string {
+  return `/api/case-stream/jobs/${encodeURIComponent(jobId)}/frames/${Math.max(0, Math.floor(frameIndex))}`;
+}
+
+export function getSavedCaseStreamFrameUrl(streamId: string, frameIndex: number): string {
+  return `/api/case-stream/library/${encodeURIComponent(streamId)}/frames/${Math.max(0, Math.floor(frameIndex))}`;
+}
+
+export async function prewarmCaseStreamJobFrames(
+  jobId: string,
+  frameIndex: number,
+  options?: { auth?: StudyApiAuthContext; radius?: number }
+): Promise<void> {
+  await request(`/case-stream/jobs/${encodeURIComponent(jobId)}/frames/prewarm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify({
+      frame_index: Math.max(0, Math.floor(frameIndex)),
+      radius: Math.max(4, Math.floor(options?.radius || 72)),
+    }),
+  });
+}
+
+export async function prewarmSavedCaseStreamFrames(
+  streamId: string,
+  frameIndex: number,
+  options?: { auth?: StudyApiAuthContext; radius?: number }
+): Promise<void> {
+  await request(`/case-stream/library/${encodeURIComponent(streamId)}/frames/prewarm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify({
+      frame_index: Math.max(0, Math.floor(frameIndex)),
+      radius: Math.max(4, Math.floor(options?.radius || 72)),
+    }),
+  });
+}
+
 export async function getSavedCaseStreamPresentation(
   streamId: string,
   options?: { auth?: StudyApiAuthContext }
@@ -1564,18 +2347,13 @@ export async function getSavedCaseStreamPresentation(
 
   let payload: { ok?: boolean; presentation?: CaseStreamPresentationManifest } | null = null;
   try {
-    const res = await fetch(`/api/case-stream/library/${encodeURIComponent(streamId)}/presentation`, {
-      headers: buildStudyApiAuthHeaders(options?.auth),
-      credentials: 'include',
-      signal: controller.signal,
-    });
-    const data = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      throw new Error(toErrorMessage(data, res.status));
-    }
-
-    payload = data;
+    payload = await request<{ ok?: boolean; presentation?: CaseStreamPresentationManifest }>(
+      `/case-stream/library/${encodeURIComponent(streamId)}/presentation`,
+      {
+        headers: buildStudyApiAuthHeaders(options?.auth),
+        signal: controller.signal,
+      }
+    );
   } catch (error) {
     if (error instanceof DOMException && error.name === 'AbortError') {
       throw new Error('Case presentation request timed out.');
@@ -1603,12 +2381,20 @@ export async function downloadSavedCaseStream(
   for (let index = 0; index < baseCandidates.length; index += 1) {
     const baseUrl = baseCandidates[index];
     const hasNextCandidate = index < baseCandidates.length - 1;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
 
     try {
+      const controller = new AbortController();
+      timeoutId = setTimeout(() => controller.abort(), CASE_STREAM_DOWNLOAD_TIMEOUT_MS);
       const res = await fetch(`${baseUrl}/case-stream/library/${encodeURIComponent(streamId)}/download`, {
         method: 'GET',
         headers: authHeaders,
+        signal: controller.signal,
       });
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
 
       if (res.ok) {
         const filename = parseAttachmentFilename(res.headers.get('content-disposition')) || `case-stream-${streamId}.mp4`;
@@ -1624,10 +2410,21 @@ export async function downloadSavedCaseStream(
         lastError = new Error(message);
         continue;
       }
+      if (res.status === 401) {
+        throw new AuthSessionError(message);
+      }
       throw new Error(message);
     } catch (error) {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
       if (!(error instanceof Error)) {
         lastError = new Error('Saved stream download failed');
+        continue;
+      }
+
+      if (error.name === 'AbortError') {
+        lastError = new Error('Saved stream download timed out. Please try again.');
         continue;
       }
 
@@ -1646,7 +2443,7 @@ export async function downloadSavedCaseStream(
 export async function saveCaseStreamToLibrary(
   jobId: string,
   name: string,
-  options?: { auth?: StudyApiAuthContext }
+  options?: { auth?: StudyApiAuthContext; assignedMdEmail?: string; assignedMdName?: string }
 ): Promise<CaseStreamLibraryItem> {
   const authHeaders = buildStudyApiAuthHeaders(options?.auth);
   const payload = await request<{ ok?: boolean; stream?: CaseStreamLibraryItem }>('/case-stream/library', {
@@ -1658,6 +2455,8 @@ export async function saveCaseStreamToLibrary(
     body: JSON.stringify({
       job_id: jobId,
       name: name,
+      assigned_md_email: options?.assignedMdEmail || '',
+      assigned_md_name: options?.assignedMdName || '',
     }),
   });
 
@@ -1687,6 +2486,58 @@ export async function repairSavedCaseStream(
   return payload.stream;
 }
 
+export async function assignSavedCaseStream(
+  streamId: string,
+  assignment: {
+    assignedMdEmail?: string;
+    assignedMdName?: string;
+    readingStatus?: CaseStreamLibraryItem['reading_status'];
+  },
+  options?: { auth?: StudyApiAuthContext }
+): Promise<CaseStreamLibraryItem> {
+  const payload = await request<{ ok?: boolean; stream?: CaseStreamLibraryItem }>(
+    `/case-stream/library/${encodeURIComponent(streamId)}/assignment`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+      body: JSON.stringify({
+        assigned_md_email: assignment.assignedMdEmail || '',
+        assigned_md_name: assignment.assignedMdName || '',
+        reading_status: assignment.readingStatus || 'assigned',
+      }),
+    }
+  );
+
+  if (!payload?.stream) {
+    throw new Error('Failed to assign saved stream.');
+  }
+
+  return payload.stream;
+}
+
+export async function updateSavedCaseStreamReadingStatus(
+  streamId: string,
+  readingStatus: Exclude<CaseStreamLibraryItem['reading_status'], 'unassigned' | undefined>,
+  options?: { auth?: StudyApiAuthContext }
+): Promise<CaseStreamLibraryItem> {
+  const payload = await request<{ ok?: boolean; stream?: CaseStreamLibraryItem }>(
+    `/case-stream/library/${encodeURIComponent(streamId)}/reading-status`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+      body: JSON.stringify({
+        reading_status: readingStatus,
+      }),
+    }
+  );
+
+  if (!payload?.stream) {
+    throw new Error('Failed to update stream reading status.');
+  }
+
+  return payload.stream;
+}
+
 export async function deleteSavedCaseStream(
   streamId: string,
   options?: { auth?: StudyApiAuthContext }
@@ -1699,10 +2550,155 @@ export async function deleteSavedCaseStream(
 
 function buildStudyApiAuthHeaders(auth?: StudyApiAuthContext): Record<string, string> {
   if (!auth?.email) return {};
-  return {
+  const headers: Record<string, string> = {
     'x-user-email': auth.email,
     'x-user-role': auth.role || '',
     'x-user-name': auth.name || '',
+  };
+  if (auth.isSuperAdmin) {
+    headers['x-user-super-admin'] = '1';
+  }
+  if (Array.isArray(auth.whiteLabelAccountIds) && auth.whiteLabelAccountIds.length > 0) {
+    headers['x-white-label-account-ids'] = auth.whiteLabelAccountIds.join(',');
+  }
+  if (auth.primaryWhiteLabelAccountId) {
+    headers['x-primary-white-label-account-id'] = auth.primaryWhiteLabelAccountId;
+  }
+  if (auth.whiteLabelAccessLevel) {
+    headers['x-white-label-access-level'] = auth.whiteLabelAccessLevel;
+  }
+  return headers;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseSseMessage(raw: string): { event?: string; data?: string } | null {
+  const lines = raw.split(/\r?\n/);
+  let event = '';
+  const dataLines: string[] = [];
+
+  for (const line of lines) {
+    if (!line) continue;
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim();
+      continue;
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+
+  if (!event && dataLines.length === 0) return null;
+  return {
+    event: event || 'message',
+    data: dataLines.join('\n'),
+  };
+}
+
+export async function setStudyPresence(
+  id: string | number,
+  payload: { client_id: string; mode?: 'viewing' | 'editing' | 'signoff' | string },
+  options?: { auth?: StudyApiAuthContext }
+): Promise<{ ok: boolean; presence: StudyPresenceEntry[]; entry: StudyPresenceEntry }> {
+  return request(`/studies/${id}/presence`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export async function clearStudyPresence(
+  id: string | number,
+  payload: { client_id: string },
+  options?: { auth?: StudyApiAuthContext }
+): Promise<{ ok: boolean; removed: boolean; presence: StudyPresenceEntry[] }> {
+  return request(`/studies/${id}/presence`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json', ...buildStudyApiAuthHeaders(options?.auth) },
+    body: JSON.stringify(payload || {}),
+  });
+}
+
+export function subscribeStudyRealtime(options: {
+  auth?: StudyApiAuthContext;
+  clientId: string;
+  studyId?: string | number;
+  onEvent: (event: StudyRealtimeEvent) => void;
+  onConnectionChange?: (connected: boolean) => void;
+  onError?: (error: Error) => void;
+}): { close: () => void } {
+  const controller = new AbortController();
+  let closed = false;
+  let retryDelay = 1000;
+  const studyId = options.studyId !== undefined && options.studyId !== null ? String(options.studyId) : '';
+
+  const connect = async () => {
+    while (!closed && !controller.signal.aborted) {
+      try {
+        const url = new URL(toAbsoluteUrl('/studies/stream', BASE_URL));
+        url.searchParams.set('client_id', options.clientId);
+        if (studyId) url.searchParams.set('study_id', studyId);
+
+        const response = await fetch(url.toString(), {
+          headers: buildStudyApiAuthHeaders(options.auth),
+          signal: controller.signal,
+        });
+
+        if (!response.ok || !response.body) {
+          throw new Error(`Realtime stream failed (${response.status})`);
+        }
+
+        options.onConnectionChange?.(true);
+        retryDelay = 1000;
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (!closed && !controller.signal.aborted) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          while (true) {
+            const boundary = buffer.indexOf('\n\n');
+            if (boundary < 0) break;
+            const raw = buffer.slice(0, boundary);
+            buffer = buffer.slice(boundary + 2);
+            const parsed = parseSseMessage(raw);
+            if (!parsed?.event || !parsed.data) continue;
+            try {
+              const payload = JSON.parse(parsed.data) as StudyRealtimeEvent;
+              options.onEvent({
+                ...payload,
+                event: payload.event || parsed.event,
+              });
+            } catch (error) {
+              options.onError?.(error instanceof Error ? error : new Error('Failed to parse realtime payload'));
+            }
+          }
+        }
+      } catch (error) {
+        if (closed || controller.signal.aborted) break;
+        options.onConnectionChange?.(false);
+        options.onError?.(error instanceof Error ? error : new Error('Realtime connection failed'));
+        await sleep(retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 10000);
+        continue;
+      }
+    }
+    options.onConnectionChange?.(false);
+  };
+
+  void connect();
+
+  return {
+    close: () => {
+      closed = true;
+      controller.abort();
+    },
   };
 }
 

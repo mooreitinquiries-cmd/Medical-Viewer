@@ -14,6 +14,10 @@ import {
   type CareContact,
   type CareMessage,
 } from '@/lib/careApi';
+import { getVisibleErrorMessage } from '@/lib/sessionApi';
+import { useAuth } from '@/context/AuthContext';
+
+const CALL_APP_URL = 'https://call.octelerad.com';
 
 const OU_LABEL: Record<CareContact['role'], string> = {
   admin: 'Admins',
@@ -25,6 +29,7 @@ const OU_LABEL: Record<CareContact['role'], string> = {
 export default function Messages() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const { hasFeature } = useAuth();
   const [contacts, setContacts] = useState<CareContact[]>([]);
   const [selectedContactEmail, setSelectedContactEmail] = useState('');
   const [messagesByContact, setMessagesByContact] = useState<Record<string, CareMessage[]>>({});
@@ -48,7 +53,8 @@ export default function Messages() {
           '';
         setSelectedContactEmail((prev) => prev || preferred);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Failed to load contacts');
+        const message = getVisibleErrorMessage(error, 'Failed to load contacts');
+        if (message) toast.error(message);
       } finally {
         setLoadingContacts(false);
       }
@@ -80,7 +86,8 @@ export default function Messages() {
           [selected.email]: data.messages || [],
         }));
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Failed to load messages');
+        const message = getVisibleErrorMessage(error, 'Failed to load messages');
+        if (message) toast.error(message);
       } finally {
         setLoadingThread(false);
       }
@@ -124,7 +131,8 @@ export default function Messages() {
       }));
       setDraft('');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to send message');
+      const message = getVisibleErrorMessage(error, 'Failed to send message');
+      if (message) toast.error(message);
     }
   };
 
@@ -205,14 +213,16 @@ export default function Messages() {
                   </Badge>
                 </div>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => navigate(`/video?target=${encodeURIComponent(selectedContact.name)}`)}
-                >
-                  <Video className="mr-2 h-4 w-4" />
-                  Start Video Call
-                </Button>
+                {hasFeature('videoConsults') && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => window.open(CALL_APP_URL, '_blank', 'noopener,noreferrer')}
+                  >
+                    <Video className="mr-2 h-4 w-4" />
+                    Start Video Call
+                  </Button>
+                )}
               </div>
 
               <div className="mb-4 h-[360px] space-y-3 overflow-y-auto rounded-md border bg-muted/30 p-4">

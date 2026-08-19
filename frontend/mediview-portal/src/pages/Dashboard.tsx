@@ -79,7 +79,7 @@ export default function Dashboard() {
         <Button asChild>
           <Link to="/upload">
             <Upload className="mr-2 h-4 w-4" />
-            Upload Study
+            New Case
           </Link>
         </Button>
       </div>

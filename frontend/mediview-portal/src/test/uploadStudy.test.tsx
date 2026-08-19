@@ -9,6 +9,7 @@ const toastSuccessMock = vi.fn();
 
 const uploadStudyMock = vi.fn();
 const uploadCaseRecordingMock = vi.fn();
+const addStudyReportMock = vi.fn();
 
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
@@ -34,48 +35,12 @@ vi.mock('sonner', () => ({
   },
 }));
 
-vi.mock('@/components/ui/select', () => {
-  function Select({
-    value,
-    onValueChange,
-    children,
-  }: {
-    value: string;
-    onValueChange: (v: string) => void;
-    children: React.ReactNode;
-  }) {
-    const childrenArray = Array.isArray(children) ? children : [children];
-    const trigger = childrenArray.find((child) => {
-      return Boolean(child && typeof child === 'object' && 'props' in child && child.props?.id);
-    }) as { props?: { id?: string } } | undefined;
-    const ariaLabel = trigger?.props?.id === 'patient_sex' ? 'Sex *' : 'Modality *';
-    return (
-      <select
-        aria-label={ariaLabel}
-        value={value}
-        onChange={(event) => onValueChange(event.target.value)}
-      >
-        <option value="">Select modality</option>
-        {children}
-      </select>
-    );
-  }
-
-  const SelectTrigger = () => null;
-  const SelectValue = () => null;
-  const SelectContent = ({ children }: { children: React.ReactNode }) => <>{children}</>;
-  const SelectItem = ({ value, children }: { value: string; children: React.ReactNode }) => (
-    <option value={value}>{children}</option>
-  );
-
-  return { Select, SelectTrigger, SelectValue, SelectContent, SelectItem };
-});
-
 vi.mock('@/components/ui/slider', () => ({
   Slider: () => <div data-testid="slider-mock" />,
 }));
 
 vi.mock('@/lib/api', () => ({
+  addStudyReport: (...args: unknown[]) => addStudyReportMock(...args),
   uploadStudy: (...args: unknown[]) => uploadStudyMock(...args),
   uploadCaseRecording: (...args: unknown[]) => uploadCaseRecordingMock(...args),
   heartbeatLiveCase: vi.fn(),
@@ -85,6 +50,23 @@ vi.mock('@/lib/api', () => ({
   startLiveCase: vi.fn(),
   stopLiveCase: vi.fn(),
   uploadLiveCaseRecording: vi.fn(),
+}));
+
+vi.mock('@/lib/careApi', () => ({
+  listCareClients: vi.fn().mockResolvedValue({
+    clients: [
+      {
+        username: 'client.one',
+        email: 'client@example.com',
+        name: 'Client One',
+        role: 'clinic',
+        status: 'active',
+        twoFactorEnabled: false,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        lastLoginAt: null,
+      },
+    ],
+  }),
 }));
 
 function setupBasicMediaRecorderMocks() {
@@ -126,10 +108,20 @@ function setupBasicMediaRecorderMocks() {
   globalThis.URL.revokeObjectURL = vi.fn();
 }
 
-function fillRequiredDemographics() {
-  fireEvent.change(screen.getByLabelText('Age *'), { target: { value: '45' } });
-  fireEvent.change(screen.getByLabelText('Sex *'), { target: { value: 'Female' } });
-  fireEvent.change(screen.getByLabelText('Zip Code *'), { target: { value: '90210' } });
+async function fillRequiredDemographics() {
+  await screen.findByDisplayValue('Sarai');
+  fireEvent.change(screen.getByLabelText('DOB'), { target: { value: '1980-01-01' } });
+  fireEvent.change(screen.getByLabelText('Study Date'), { target: { value: '2026-01-01' } });
+  fireEvent.change(screen.getByLabelText('Sex'), { target: { value: 'Female' } });
+  fireEvent.change(screen.getByLabelText('Zip Code'), { target: { value: '90210' } });
+  fireEvent.change(screen.getByLabelText('Client'), { target: { value: 'Client One' } });
+}
+
+function getFileInputByAccept(container: HTMLElement, acceptPart: string) {
+  const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="file"]'));
+  const input = inputs.find((candidate) => candidate.accept.includes(acceptPart));
+  if (!input) throw new Error(`Could not find file input accepting ${acceptPart}`);
+  return input;
 }
 
 describe('UploadStudy validations', () => {
@@ -140,25 +132,47 @@ describe('UploadStudy validations', () => {
     uploadCaseRecordingMock.mockResolvedValue({ ok: true, recording: { id: 'r1' } });
   });
 
-  it('rejects submit when required metadata exists but no media is attached', async () => {
+  it('creates a case when metadata exists but no media is attached', async () => {
     render(
       <MemoryRouter>
         <UploadStudy />
       </MemoryRouter>
     );
 
-    fireEvent.change(screen.getByLabelText('Study Title *'), { target: { value: 'No Media Case' } });
-    fillRequiredDemographics();
-    fireEvent.change(screen.getByLabelText('Modality *'), { target: { value: 'CT' } });
+    fireEvent.change(screen.getByLabelText('Study Title'), { target: { value: 'No Media Case' } });
+    await fillRequiredDemographics();
+    fireEvent.change(screen.getByLabelText('Modality'), { target: { value: 'CT' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Upload Study' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Case' }));
 
-    await waitFor(() => {
-      expect(toastErrorMock).toHaveBeenCalledWith(
-        'Attach DICOM/JPEG2000 files or another media type (MP4 or screen recording).'
-      );
+    await waitFor(() => expect(uploadStudyMock).toHaveBeenCalledTimes(1));
+    expect(toastErrorMock).not.toHaveBeenCalled();
+    expect(navigateMock).toHaveBeenCalledWith('/studies');
+  });
+
+  it('creates a case with blank age when DOB and study date are omitted', async () => {
+    render(
+      <MemoryRouter>
+        <UploadStudy />
+      </MemoryRouter>
+    );
+
+    fireEvent.change(screen.getByLabelText('Study Title'), { target: { value: 'No Age Case' } });
+    await screen.findByDisplayValue('Sarai');
+    fireEvent.change(screen.getByLabelText('Sex'), { target: { value: 'Female' } });
+    fireEvent.change(screen.getByLabelText('Zip Code'), { target: { value: '90210' } });
+    fireEvent.change(screen.getByLabelText('Client'), { target: { value: 'Client One' } });
+    fireEvent.change(screen.getByLabelText('Modality'), { target: { value: 'CT' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create Case' }));
+
+    await waitFor(() => expect(uploadStudyMock).toHaveBeenCalledTimes(1));
+    expect(uploadStudyMock.mock.calls[0][0]).toMatchObject({
+      patient_dob: '',
+      patient_age: '',
+      study_date: '',
     });
-    expect(uploadStudyMock).not.toHaveBeenCalled();
+    expect(toastErrorMock).not.toHaveBeenCalled();
   });
 
   it('submits successfully with screen recording only (no DICOM, no MP4)', async () => {
@@ -168,15 +182,15 @@ describe('UploadStudy validations', () => {
       </MemoryRouter>
     );
 
-    fireEvent.change(screen.getByLabelText('Study Title *'), { target: { value: 'Recording Only Case' } });
-    fillRequiredDemographics();
-    fireEvent.change(screen.getByLabelText('Modality *'), { target: { value: 'MR' } });
+    fireEvent.change(screen.getByLabelText('Study Title'), { target: { value: 'Recording Only Case' } });
+    await fillRequiredDemographics();
+    fireEvent.change(screen.getByLabelText('Modality'), { target: { value: 'MR' } });
 
     fireEvent.click(screen.getByRole('button', { name: 'Record' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Stop Recording' }));
     await screen.findByText(/Recording ready/);
 
-    const uploadButton = screen.getByRole('button', { name: 'Upload Study' });
+    const uploadButton = screen.getByRole('button', { name: 'Create Case' });
     fireEvent.submit(uploadButton.closest('form') as HTMLFormElement);
 
     await waitFor(() => expect(uploadStudyMock).toHaveBeenCalledTimes(1));
@@ -193,16 +207,15 @@ describe('UploadStudy validations', () => {
       </MemoryRouter>
     );
 
-    fireEvent.change(screen.getByLabelText('Study Title *'), { target: { value: 'Fast DICOM Case' } });
-    fillRequiredDemographics();
-    fireEvent.change(screen.getByLabelText('Modality *'), { target: { value: 'CT' } });
+    fireEvent.change(screen.getByLabelText('Study Title'), { target: { value: 'Fast DICOM Case' } });
+    await fillRequiredDemographics();
+    fireEvent.change(screen.getByLabelText('Modality'), { target: { value: 'CT' } });
 
-    const fileInputs = container.querySelectorAll('input[type="file"]');
-    const dicomInput = fileInputs[0] as HTMLInputElement;
+    const dicomInput = getFileInputByAccept(container, 'application/dicom');
     const dicom = new File(['dicom-bytes'], 'slice-1.dcm', { type: 'application/dicom' });
     fireEvent.change(dicomInput, { target: { files: [dicom] } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Upload Study' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Case' }));
 
     await waitFor(() => expect(uploadStudyMock).toHaveBeenCalledTimes(1));
     expect(uploadStudyMock.mock.calls[0][4]).toMatchObject({
@@ -218,16 +231,15 @@ describe('UploadStudy validations', () => {
       </MemoryRouter>
     );
 
-    fireEvent.change(screen.getByLabelText('Study Title *'), { target: { value: 'JPEG2000 Case' } });
-    fillRequiredDemographics();
-    fireEvent.change(screen.getByLabelText('Modality *'), { target: { value: 'US' } });
+    fireEvent.change(screen.getByLabelText('Study Title'), { target: { value: 'JPEG2000 Case' } });
+    await fillRequiredDemographics();
+    fireEvent.change(screen.getByLabelText('Modality'), { target: { value: 'US' } });
 
-    const fileInputs = container.querySelectorAll('input[type="file"]');
-    const jpeg2000Input = fileInputs[1] as HTMLInputElement;
+    const jpeg2000Input = getFileInputByAccept(container, '.j2c');
     const jpeg2000 = new File(['jpeg2000-bytes'], 'image.jp2', { type: 'image/jp2' });
     fireEvent.change(jpeg2000Input, { target: { files: [jpeg2000] } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Upload Study' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create Case' }));
 
     await waitFor(() => expect(uploadStudyMock).toHaveBeenCalledTimes(1));
     expect(uploadStudyMock.mock.calls[0][4]).toMatchObject({

@@ -68,6 +68,19 @@ If your server is not on `http://127.0.0.1:3001`, set `SMOKE_BASE_URL`.
 - `GET /api/shared/:token`
 - `POST /api/studies/:id/export-nextcloud`
 - `GET /api/viewer-link/:id`
+- `GET /api/auth/2fa/status`
+- `POST /api/auth/2fa/setup/start`
+- `POST /api/auth/2fa/setup/verify`
+- `POST /api/auth/2fa/disable/start`
+- `POST /api/auth/2fa/disable`
+- `POST /api/auth/2fa/challenge/start`
+- `POST /api/auth/2fa/challenge/verify`
+
+## Two-Factor Auth Framework
+
+2FA is scaffolded but disabled by default. Set `TWO_FACTOR_AUTH_ENABLED=true`, `TWO_FACTOR_CODE_SECRET`, `TWO_FACTOR_RESEND_API_KEY`, and `TWO_FACTOR_RESEND_FROM` when you are ready to connect the existing Resend account and enforce the login flow.
+
+The framework stores 2FA settings and hashed one-time challenges in the existing auth session store. It supports end-user email setup, login challenge verification, and disabling 2FA, but it does not currently enforce 2FA during login because login/session creation lives outside this API boundary.
 
 ## Startup Deployment Notes
 

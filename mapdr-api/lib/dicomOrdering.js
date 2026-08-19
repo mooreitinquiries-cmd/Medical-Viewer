@@ -19,6 +19,21 @@ function firstNumber(tags, names) {
   return Number.isFinite(value) ? value : null;
 }
 
+function firstIntegerFromUid(tags, names) {
+  const raw = firstTag(tags, names);
+  if (!raw) return null;
+  const parts = String(raw)
+    .split('.')
+    .map(function (part) {
+      return Number(part);
+    })
+    .filter(function (part) {
+      return Number.isFinite(part);
+    });
+  if (parts.length === 0) return null;
+  return parts[parts.length - 1];
+}
+
 function parseDicomDecimalList(value) {
   return cleanText(value)
     .split('\\')
@@ -39,6 +54,52 @@ function parseDicomTime(value) {
   const seconds = Number(text.slice(4) || 0);
   const total = hours * 3600 + minutes * 60 + seconds;
   return Number.isFinite(total) ? total : null;
+}
+
+function parseDicomDate(value) {
+  const text = cleanText(value).replace(/[^0-9]/g, '');
+  if (text.length < 8) return null;
+  const year = Number(text.slice(0, 4));
+  const month = Number(text.slice(4, 6));
+  const day = Number(text.slice(6, 8));
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
+  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+  return year * 10000 + month * 100 + day;
+}
+
+function vectorCross(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length < 3 || right.length < 3) {
+    return null;
+  }
+  return [
+    left[1] * right[2] - left[2] * right[1],
+    left[2] * right[0] - left[0] * right[2],
+    left[0] * right[1] - left[1] * right[0],
+  ];
+}
+
+function vectorDot(left, right) {
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length < 3 || right.length < 3) {
+    return null;
+  }
+  const value = left[0] * right[0] + left[1] * right[1] + left[2] * right[2];
+  return Number.isFinite(value) ? value : null;
+}
+
+function imagePositionProjection(tags) {
+  const position = parseDicomDecimalList(firstTag(tags, ['ImagePositionPatient', '0020,0032']));
+  if (position.length < 3) return null;
+
+  const orientation = parseDicomDecimalList(firstTag(tags, ['ImageOrientationPatient', '0020,0037']));
+  if (orientation.length >= 6) {
+    const row = orientation.slice(0, 3);
+    const column = orientation.slice(3, 6);
+    const normal = vectorCross(row, column);
+    const projection = vectorDot(position, normal);
+    if (Number.isFinite(projection)) return projection;
+  }
+
+  return position[2];
 }
 
 function compareNullable(left, right) {
@@ -65,6 +126,8 @@ function buildSeriesOrdering(series, fallbackIndex) {
     id: cleanText(series && series.ID),
     fallbackIndex: Number(fallbackIndex) || 0,
     seriesNumber: firstNumber(tags, ['SeriesNumber', '0020,0011']),
+    acquisitionDate: parseDicomDate(firstTag(tags, ['AcquisitionDate', '0008,0022'])),
+    seriesDate: parseDicomDate(firstTag(tags, ['SeriesDate', '0008,0021'])),
     acquisitionTime: parseDicomTime(firstTag(tags, ['AcquisitionTime', '0008,0032'])),
     seriesTime: parseDicomTime(firstTag(tags, ['SeriesTime', '0008,0031'])),
     description: firstTag(tags, ['SeriesDescription', '0008,103e']),
@@ -73,24 +136,30 @@ function buildSeriesOrdering(series, fallbackIndex) {
 
 function buildInstanceOrdering(instance, seriesOrdering, fallbackIndex) {
   const tags = (instance && instance.MainDicomTags) || {};
-  const imagePosition = parseDicomDecimalList(firstTag(tags, ['ImagePositionPatient', '0020,0032']));
   return {
     id: cleanText(instance && instance.ID),
     fallbackIndex: Number(fallbackIndex) || 0,
     series: seriesOrdering || buildSeriesOrdering(null, 0),
     temporalPosition: firstNumber(tags, ['TemporalPositionIdentifier', '0020,0100']),
+    inStackPosition: firstNumber(tags, ['InStackPositionNumber', '0020,9057']),
+    dimensionIndex: firstNumber(tags, ['DimensionIndexValues', '0020,9157']),
     instanceNumber: firstNumber(tags, ['InstanceNumber', '0020,0013']),
-    imagePositionZ: imagePosition.length >= 3 ? imagePosition[2] : null,
+    imagePositionProjection: imagePositionProjection(tags),
     sliceLocation: firstNumber(tags, ['SliceLocation', '0020,1041']),
     acquisitionNumber: firstNumber(tags, ['AcquisitionNumber', '0020,0012']),
+    acquisitionDate: parseDicomDate(firstTag(tags, ['AcquisitionDate', '0008,0022'])),
+    contentDate: parseDicomDate(firstTag(tags, ['ContentDate', '0008,0023'])),
     acquisitionTime: parseDicomTime(firstTag(tags, ['AcquisitionTime', '0008,0032'])),
     contentTime: parseDicomTime(firstTag(tags, ['ContentTime', '0008,0033'])),
+    sopInstanceTail: firstIntegerFromUid(tags, ['SOPInstanceUID', '0008,0018']),
   };
 }
 
 function compareSeriesOrdering(left, right) {
   return (
     compareNullable(left.seriesNumber, right.seriesNumber) ||
+    compareNullable(left.acquisitionDate, right.acquisitionDate) ||
+    compareNullable(left.seriesDate, right.seriesDate) ||
     compareNullable(left.acquisitionTime, right.acquisitionTime) ||
     compareNullable(left.seriesTime, right.seriesTime) ||
     compareText(left.description, right.description) ||
@@ -103,12 +172,17 @@ function compareInstanceOrdering(left, right) {
   return (
     compareSeriesOrdering(left.series, right.series) ||
     compareNullable(left.temporalPosition, right.temporalPosition) ||
-    compareNullable(left.instanceNumber, right.instanceNumber) ||
-    compareNullable(left.imagePositionZ, right.imagePositionZ) ||
+    compareNullable(left.inStackPosition, right.inStackPosition) ||
+    compareNullable(left.dimensionIndex, right.dimensionIndex) ||
+    compareNullable(left.imagePositionProjection, right.imagePositionProjection) ||
     compareNullable(left.sliceLocation, right.sliceLocation) ||
     compareNullable(left.acquisitionNumber, right.acquisitionNumber) ||
+    compareNullable(left.acquisitionDate, right.acquisitionDate) ||
+    compareNullable(left.contentDate, right.contentDate) ||
     compareNullable(left.acquisitionTime, right.acquisitionTime) ||
     compareNullable(left.contentTime, right.contentTime) ||
+    compareNullable(left.instanceNumber, right.instanceNumber) ||
+    compareNullable(left.sopInstanceTail, right.sopInstanceTail) ||
     compareText(left.id, right.id) ||
     left.fallbackIndex - right.fallbackIndex
   );

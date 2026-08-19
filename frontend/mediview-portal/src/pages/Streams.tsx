@@ -1,18 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { UIEvent } from 'react';
 import { Link } from 'react-router-dom';
-import { FileText, Mic, Paperclip, Square } from 'lucide-react';
+import { FileText, Mic, Paperclip, Square, UserCheck } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import { FrameScrubPlayerDialog } from '@/components/FrameScrubPlayerDialog';
+import { CaseStreamPlayer } from '@/components/CaseStreamPlayer';
 import { toast } from 'sonner';
 import {
   addStudyReport,
+  assignSavedCaseStream,
   deleteSavedCaseStream,
   downloadSavedCaseStream,
   fetchStudyById,
+  getSavedCaseStreamFrameUrl,
   getSavedCaseStreamPresentation,
   listSavedCaseStreams,
+  prewarmSavedCaseStreamFrames,
   repairSavedCaseStream,
+  updateSavedCaseStreamReadingStatus,
   updateStudyTechNotes,
   type CaseReport,
   type CaseStreamLibraryItem,
@@ -24,6 +31,8 @@ import {
   getPreviousCasePresentationIndex,
 } from '@/lib/caseStreamPresentation';
 import { useAuth } from '@/context/AuthContext';
+import { getVisibleErrorMessage } from '@/lib/sessionApi';
+import type { FrameReviewSegment } from '@/hooks/useFrameReviewScrubber';
 
 type SpeechRecognitionResultLike = {
   isFinal: boolean;
@@ -57,6 +66,20 @@ type SpeechRecognitionLike = {
 };
 
 type SpeechRecognitionConstructor = new () => SpeechRecognitionLike;
+
+const READING_STATUS_LABELS: Record<NonNullable<CaseStreamLibraryItem['reading_status']>, string> = {
+  unassigned: 'Unassigned',
+  assigned: 'Assigned',
+  in_review: 'In Review',
+  read: 'Read',
+  completed: 'Completed',
+};
+const DEFAULT_ASSIGNED_MD_NAME = 'Sarai';
+const DEFAULT_ASSIGNED_MD_VALUE = '__default_sarai__';
+
+interface StreamsProps {
+  assignedOnly?: boolean;
+}
 
 function getSpeechRecognitionConstructor(): SpeechRecognitionConstructor | null {
   const speechWindow = window as Window & {
@@ -94,8 +117,8 @@ function appendDictatedText(current: string, transcript: string) {
   return `${cleanCurrent} ${cleanTranscript}`;
 }
 
-export default function Streams() {
-  const { user } = useAuth();
+export default function Streams({ assignedOnly = false }: StreamsProps) {
+  const { user, users } = useAuth();
   const studyApiAuth = useMemo(
     () => (user ? { email: user.email, role: user.role, name: user.name } : undefined),
     [user]
@@ -112,6 +135,7 @@ export default function Streams() {
   const [loadingActionId, setLoadingActionId] = useState('');
   const [repairingStreamId, setRepairingStreamId] = useState('');
   const [presentationStatus, setPresentationStatus] = useState('');
+  const [scrubPlayerOpen, setScrubPlayerOpen] = useState(false);
   const [caseTechNotes, setCaseTechNotes] = useState<Record<number, string>>({});
   const [caseTechNotesUnavailable, setCaseTechNotesUnavailable] = useState<Record<number, boolean>>({});
   const [techNotesDraft, setTechNotesDraft] = useState('');
@@ -123,18 +147,19 @@ export default function Streams() {
   const [reportText, setReportText] = useState('');
   const [reportFile, setReportFile] = useState<File | null>(null);
   const [savingReport, setSavingReport] = useState(false);
-  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [assignmentDrafts, setAssignmentDrafts] = useState<Record<string, string>>({});
+  const [savingAssignmentId, setSavingAssignmentId] = useState('');
+  const [savingStatusId, setSavingStatusId] = useState('');
+  const [streamTableScrollWidth, setStreamTableScrollWidth] = useState(1600);
   const techNotesTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const reportFileInputRef = useRef<HTMLInputElement | null>(null);
   const activeCaseStudyIdRef = useRef<number | null>(null);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const dictationStudyIdRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (videoUrl.startsWith('blob:')) URL.revokeObjectURL(videoUrl);
-    };
-  }, [videoUrl]);
+  const streamTopScrollRef = useRef<HTMLDivElement | null>(null);
+  const streamTableScrollRef = useRef<HTMLDivElement | null>(null);
+  const streamTableRef = useRef<HTMLTableElement | null>(null);
+  const isSyncingStreamScrollRef = useRef(false);
 
   const load = useCallback(async () => {
     try {
@@ -143,7 +168,8 @@ export default function Streams() {
       const streams = await listSavedCaseStreams({ auth: studyApiAuth });
       setItems(streams);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load streams';
+      const message = getVisibleErrorMessage(err, 'Failed to load streams');
+      if (!message) return;
       if (message.toLowerCase().includes('route not found')) {
         setLibraryUnavailable(true);
         setItems([]);
@@ -160,6 +186,60 @@ export default function Streams() {
   }, [load]);
 
   const activeItem = useMemo(() => items.find((item) => item.id === activeStreamId) || null, [items, activeStreamId]);
+  const canAssignStreams = user?.role === 'admin' || user?.role === 'clinic';
+  const doctorOptions = useMemo(
+    () => users.filter((entry) => entry.role === 'doctor' && entry.status === 'active'),
+    [users]
+  );
+  const displayedItems = useMemo(() => {
+    const assignedItems = assignedOnly
+      ? items.filter((item) => Boolean(item.assigned_md_email || item.assigned_md_name))
+      : items;
+    if (user?.role !== 'doctor') return assignedItems;
+    const userEmail = user.email.toLowerCase();
+    const userName = user.name.toLowerCase();
+    return assignedItems.filter((item) => {
+      const assignedEmail = (item.assigned_md_email || '').toLowerCase();
+      const assignedName = (item.assigned_md_name || '').toLowerCase();
+      return (assignedEmail && assignedEmail === userEmail) || (assignedName && assignedName === userName);
+    });
+  }, [assignedOnly, items, user]);
+
+  useEffect(() => {
+    const updateScrollWidth = () => {
+      const width = streamTableRef.current?.scrollWidth || streamTableScrollRef.current?.scrollWidth || 1600;
+      setStreamTableScrollWidth(Math.max(width, 1600));
+    };
+
+    updateScrollWidth();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(updateScrollWidth);
+    if (streamTableRef.current) observer.observe(streamTableRef.current);
+    if (streamTableScrollRef.current) observer.observe(streamTableScrollRef.current);
+    return () => observer.disconnect();
+  }, [displayedItems.length, canAssignStreams]);
+
+  const syncStreamTableScroll = (
+    source: 'top' | 'table',
+    event: UIEvent<HTMLDivElement>
+  ) => {
+    if (isSyncingStreamScrollRef.current) return;
+    const target = source === 'top' ? streamTableScrollRef.current : streamTopScrollRef.current;
+    if (!target) return;
+    isSyncingStreamScrollRef.current = true;
+    target.scrollLeft = event.currentTarget.scrollLeft;
+    requestAnimationFrame(() => {
+      isSyncingStreamScrollRef.current = false;
+    });
+  };
+
+  const activeStreamFps = Math.max(1, Number(presentationManifest?.fps || activeItem?.fps || 24) || 24);
+  const activeStreamTotalFrames = useMemo(() => {
+    const explicit = Number(presentationManifest?.total_frames || activeItem?.total_frames);
+    if (Number.isFinite(explicit) && explicit > 0) return Math.floor(explicit);
+    const timeline = Array.isArray(activeItem?.timeline) ? activeItem.timeline : [];
+    return timeline.reduce((total, item) => total + (Number(item.frame_count) || 0), 0);
+  }, [activeItem, presentationManifest]);
   const caseSegments = useMemo(
     () =>
       presentationManifest?.cases.map((item) => ({
@@ -168,10 +248,58 @@ export default function Streams() {
         label: item.label,
         startSec: item.start_sec,
         endSec: item.end_sec,
+        frameCount: Number(item.frame_count) || 0,
+        startFrame: Number(item.start_frame) || 0,
+        endFrame: Number(item.end_frame) || 0,
       })) || [],
     [presentationManifest]
   );
   const activeCaseSegment = presentingCases ? caseSegments[activeCaseIndex] || null : null;
+  const frameReviewSegments = useMemo<FrameReviewSegment[]>(() => {
+    if (caseSegments.length > 0) {
+      return caseSegments
+        .map((segment) => ({
+          index: segment.index,
+          studyId: segment.studyId,
+          label: segment.label,
+          startFrame: Math.max(0, Math.floor(segment.startFrame || 0)),
+          endFrame: Math.max(0, Math.floor(segment.endFrame || segment.startFrame + segment.frameCount || 0)),
+          startSec: segment.startSec,
+          endSec: segment.endSec,
+        }))
+        .filter((segment) => segment.endFrame > segment.startFrame);
+    }
+
+    let nextStartFrame = 0;
+    return (activeItem?.timeline || [])
+      .map((item, index) => {
+        const frameCount = Math.max(0, Math.floor(Number(item.frame_count) || 0));
+        const startFrame = Number.isFinite(Number(item.start_frame)) ? Math.max(0, Math.floor(Number(item.start_frame))) : nextStartFrame;
+        const endFrame = Number.isFinite(Number(item.end_frame)) ? Math.max(0, Math.floor(Number(item.end_frame))) : startFrame + frameCount;
+        nextStartFrame = endFrame;
+        return {
+          index: Number(item.index) || index,
+          studyId: Number(item.study_id) || 0,
+          label: item.label || `Case ${item.study_id}`,
+          startFrame,
+          endFrame,
+          startSec: Number(item.start_sec) || 0,
+          endSec: Number(item.end_sec) || 0,
+        };
+      })
+      .filter((segment) => segment.endFrame > segment.startFrame);
+  }, [activeItem, caseSegments]);
+  const getActiveFrameUrl = useCallback(
+    (frameIndex: number) => (activeItem ? getSavedCaseStreamFrameUrl(activeItem.id, frameIndex) : ''),
+    [activeItem]
+  );
+  const prewarmActiveFrames = useCallback(
+    (frameIndex: number, radius: number) => {
+      if (!activeItem) return;
+      prewarmSavedCaseStreamFrames(activeItem.id, frameIndex, { auth: studyApiAuth, radius }).catch(() => {});
+    },
+    [activeItem, studyApiAuth]
+  );
 
   useEffect(() => {
     activeCaseStudyIdRef.current = activeCaseSegment?.studyId ?? null;
@@ -182,6 +310,7 @@ export default function Streams() {
       recognitionRef.current?.stop();
     }
   }, [activeCaseSegment]);
+
 
   useEffect(() => {
     if (!presentingCases || !activeCaseSegment || !studyApiAuth) {
@@ -211,7 +340,8 @@ export default function Streams() {
       })
       .catch((err) => {
         if (!cancelled) {
-          const message = err instanceof Error ? err.message : 'Failed to load tech notes';
+          const message = getVisibleErrorMessage(err, 'Failed to load tech notes');
+          if (!message) return;
           if (message.toLowerCase().includes('study not found')) {
             setCaseTechNotesUnavailable((prev) => ({ ...prev, [studyId]: true }));
             setCaseTechNotes((prev) => ({ ...prev, [studyId]: '' }));
@@ -238,13 +368,6 @@ export default function Streams() {
     }
   }, [activeCaseSegment]);
 
-  useEffect(() => {
-    if (!presentingCases || !activeCaseSegment || !videoRef.current) return;
-    const video = videoRef.current;
-    video.currentTime = activeCaseSegment.startSec;
-    video.playbackRate = playbackRate;
-    video.play().catch(() => {});
-  }, [activeCaseSegment, playbackRate, presentingCases, videoUrl]);
 
   const playStream = async (item: CaseStreamLibraryItem, options?: { presentCases?: boolean }) => {
     const shouldPresentCases = Boolean(options?.presentCases);
@@ -254,6 +377,7 @@ export default function Streams() {
       setPresentationStatus(shouldPresentCases ? 'Loading case presentation manifest...' : '');
       if (videoUrl.startsWith('blob:')) URL.revokeObjectURL(videoUrl);
       setActiveStreamId(item.id);
+      setScrubPlayerOpen(false);
       setPlaybackRate(1);
       setActiveCaseIndex(0);
 
@@ -283,14 +407,25 @@ export default function Streams() {
       setPresentationManifest(null);
       setPresentingCases(false);
       setVideoUrl(nextUrl);
+      setScrubPlayerOpen(true);
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Failed to load stream video';
+      const message = getVisibleErrorMessage(err, 'Failed to load stream video');
+      if (!message) return;
       setPresentationStatus(message);
       toast.error(message);
     } finally {
       setLoadingActionId('');
       setRepairingStreamId('');
     }
+  };
+
+  const openScrubPlayer = (item: CaseStreamLibraryItem) => {
+    if (activeStreamId === item.id && videoUrl && !presentingCases) {
+      setScrubPlayerOpen(true);
+      return;
+    }
+
+    playStream(item);
   };
 
   const removeStream = async (item: CaseStreamLibraryItem) => {
@@ -306,6 +441,7 @@ export default function Streams() {
         if (videoUrl.startsWith('blob:')) URL.revokeObjectURL(videoUrl);
         setVideoUrl('');
         setActiveStreamId('');
+        setScrubPlayerOpen(false);
         setPresentingCases(false);
         setActiveCaseIndex(0);
         setPresentationManifest(null);
@@ -313,16 +449,76 @@ export default function Streams() {
       }
       toast.success('Stream removed from library');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to remove stream');
+      const message = getVisibleErrorMessage(err, 'Failed to remove stream');
+      if (message) toast.error(message);
+    }
+  };
+
+  const saveAssignment = async (item: CaseStreamLibraryItem) => {
+    if (!studyApiAuth) {
+      toast.error('Session is still loading. Please try again.');
+      return;
+    }
+
+    const draftValue = assignmentDrafts[item.id] ?? item.assigned_md_email ?? (item.assigned_md_name === DEFAULT_ASSIGNED_MD_NAME ? DEFAULT_ASSIGNED_MD_VALUE : '');
+    const selectedDoctor = doctorOptions.find((entry) => entry.email === draftValue);
+    const defaultSaraiSelected = draftValue === DEFAULT_ASSIGNED_MD_VALUE;
+    const nameOnlyAssignment = draftValue.startsWith('__name__:') ? draftValue.slice('__name__:'.length).trim() : '';
+    const assignedMdEmail = selectedDoctor?.email || (defaultSaraiSelected || nameOnlyAssignment ? '' : draftValue.trim());
+    const assignedMdName =
+      selectedDoctor?.name ||
+      (defaultSaraiSelected ? DEFAULT_ASSIGNED_MD_NAME : nameOnlyAssignment || item.assigned_md_name || assignedMdEmail);
+
+    try {
+      setSavingAssignmentId(item.id);
+      const updated = await assignSavedCaseStream(
+        item.id,
+        {
+          assignedMdEmail,
+          assignedMdName: assignedMdEmail ? assignedMdName : '',
+          readingStatus: assignedMdEmail ? 'assigned' : 'unassigned',
+        },
+        { auth: studyApiAuth }
+      );
+      setItems((prev) => prev.map((entry) => (entry.id === updated.id ? updated : entry)));
+      setAssignmentDrafts((prev) => ({
+        ...prev,
+        [item.id]: updated.assigned_md_email || (updated.assigned_md_name === DEFAULT_ASSIGNED_MD_NAME ? DEFAULT_ASSIGNED_MD_VALUE : ''),
+      }));
+      toast.success(assignedMdEmail || defaultSaraiSelected || nameOnlyAssignment ? 'Stream assigned for reading' : 'Stream unassigned');
+    } catch (err) {
+      const message = getVisibleErrorMessage(err, 'Failed to assign stream');
+      if (message) toast.error(message);
+    } finally {
+      setSavingAssignmentId('');
+    }
+  };
+
+  const updateReadingStatus = async (
+    item: CaseStreamLibraryItem,
+    readingStatus: Exclude<CaseStreamLibraryItem['reading_status'], 'unassigned' | undefined>
+  ) => {
+    if (!studyApiAuth) {
+      toast.error('Session is still loading. Please try again.');
+      return;
+    }
+
+    try {
+      setSavingStatusId(item.id);
+      const updated = await updateSavedCaseStreamReadingStatus(item.id, readingStatus, { auth: studyApiAuth });
+      setItems((prev) => prev.map((entry) => (entry.id === updated.id ? updated : entry)));
+      toast.success('Reading status updated');
+    } catch (err) {
+      const message = getVisibleErrorMessage(err, 'Failed to update reading status');
+      if (message) toast.error(message);
+    } finally {
+      setSavingStatusId('');
     }
   };
 
   const seekToCaseIndex = (nextIndex: number) => {
-    const nextSegment = caseSegments[nextIndex];
-    if (!nextSegment || !videoRef.current) return;
+    if (!caseSegments[nextIndex]) return;
     setActiveCaseIndex(nextIndex);
-    videoRef.current.currentTime = nextSegment.startSec;
-    videoRef.current.play().catch(() => {});
   };
 
   const saveTechNotes = async () => {
@@ -331,7 +527,10 @@ export default function Streams() {
     const studyId = activeCaseSegment.studyId;
     try {
       setSavingTechNotes(true);
-      const result = await updateStudyTechNotes(studyId, techNotesDraft, { auth: studyApiAuth });
+      const result = await updateStudyTechNotes(studyId, techNotesDraft, {
+        auth: studyApiAuth,
+        baseUpdatedAt: activeCaseSegment.study?.updated_at,
+      });
       const notes = result.study?.tech_notes ?? techNotesDraft;
       setCaseTechNotes((prev) => ({ ...prev, [studyId]: notes }));
       if (activeCaseStudyIdRef.current === studyId) {
@@ -339,7 +538,8 @@ export default function Streams() {
       }
       toast.success('Tech notes saved to this case');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save tech notes');
+      const message = getVisibleErrorMessage(err, 'Failed to save tech notes');
+      if (message) toast.error(message);
     } finally {
       setSavingTechNotes(false);
     }
@@ -383,6 +583,7 @@ export default function Streams() {
           reportType: reportFile ? undefined : 'notepad',
           textReport: reportText,
           file: reportFile,
+          baseUpdatedAt: activeCaseSegment.study?.updated_at,
         },
         { auth: studyApiAuth }
       );
@@ -395,7 +596,8 @@ export default function Streams() {
       }
       toast.success('Report saved to this case');
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to save report');
+      const message = getVisibleErrorMessage(err, 'Failed to save report');
+      if (message) toast.error(message);
     } finally {
       setSavingReport(false);
     }
@@ -479,38 +681,17 @@ export default function Streams() {
     }
   };
 
-  const loopActiveCaseSegment = useCallback((video: HTMLVideoElement) => {
-    if (!activeCaseSegment) return;
-    const loopBoundarySlack = 0.08;
-    if (
-      video.currentTime < activeCaseSegment.startSec - loopBoundarySlack ||
-      video.currentTime >= activeCaseSegment.endSec - loopBoundarySlack
-    ) {
-      video.currentTime = activeCaseSegment.startSec;
-      video.play().catch(() => {});
-    }
-  }, [activeCaseSegment]);
-
-  useEffect(() => {
-    if (!presentingCases || !activeCaseSegment) return;
-    let frameId = 0;
-
-    const tick = () => {
-      if (videoRef.current) {
-        loopActiveCaseSegment(videoRef.current);
-      }
-      frameId = window.requestAnimationFrame(tick);
-    };
-
-    frameId = window.requestAnimationFrame(tick);
-    return () => window.cancelAnimationFrame(frameId);
-  }, [activeCaseSegment, loopActiveCaseSegment, presentingCases]);
-
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Streams</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Saved case streams for quick reference and prior review.</p>
+        <h1 className="text-2xl font-semibold tracking-tight">{assignedOnly ? 'Assigned Streams' : 'Streams'}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          {assignedOnly
+            ? 'Case streams assigned for MD reading and presentation.'
+            : user?.role === 'doctor'
+            ? 'Case streams assigned to you for presentation and reading.'
+            : 'Saved case streams for quick reference, presentation, and reading assignment.'}
+        </p>
       </div>
 
       {loading ? (
@@ -519,51 +700,124 @@ export default function Streams() {
         <div className="rounded-lg border p-4 text-sm text-muted-foreground">
           Streams library is not available on this API version yet. Please restart/update `mapdr-api` to enable saved streams.
         </div>
-      ) : items.length === 0 ? (
-        <div className="rounded-lg border p-4 text-sm text-muted-foreground">No saved streams yet.</div>
+      ) : displayedItems.length === 0 ? (
+        <div className="rounded-lg border p-4 text-sm text-muted-foreground">
+          {assignedOnly || user?.role === 'doctor' ? 'No case streams are assigned yet.' : 'No saved streams yet.'}
+        </div>
       ) : (
-        <div className="rounded-lg border overflow-x-auto">
-          <table className="w-full text-sm min-w-[860px]">
+        <div className="space-y-2">
+          <div
+            ref={streamTopScrollRef}
+            className="overflow-x-auto rounded-md border bg-muted/20"
+            onScroll={(event) => syncStreamTableScroll('top', event)}
+            aria-label="Streams table horizontal scroll"
+          >
+            <div className="h-3" style={{ width: streamTableScrollWidth }} />
+          </div>
+          <div
+            ref={streamTableScrollRef}
+            className="rounded-lg border overflow-x-auto"
+            onScroll={(event) => syncStreamTableScroll('table', event)}
+          >
+          <table ref={streamTableRef} className="w-full text-base min-w-[1600px]">
             <thead>
               <tr className="border-b bg-muted/50">
-                <th className="px-3 py-2 text-left">Name</th>
-                <th className="px-3 py-2 text-left">Created</th>
-                <th className="px-3 py-2 text-left">Studies</th>
-                <th className="px-3 py-2 text-left">FPS</th>
-                <th className="px-3 py-2 text-right">Actions</th>
+                <th className="w-[330px] px-4 py-3 text-left">Name</th>
+                <th className="w-[220px] px-4 py-3 text-left">Created</th>
+                <th className="w-[190px] px-4 py-3 text-left">Studies</th>
+                <th className="w-[90px] px-4 py-3 text-left">FPS</th>
+                <th className="w-[160px] px-4 py-3 text-left">Reading</th>
+                <th className="w-[360px] px-4 py-3 text-left">Assigned MD</th>
+                <th className="w-[430px] px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
-              {items.map((item) => (
+              {displayedItems.map((item) => (
                 <tr key={item.id} className="border-b last:border-0">
-                  <td className="px-3 py-2 font-medium preserve-case">{item.name}</td>
-                  <td className="px-3 py-2 text-muted-foreground">{new Date(item.created_at).toLocaleString()}</td>
-                  <td className="px-3 py-2">
+                  <td className="px-4 py-3 font-medium preserve-case">{item.name}</td>
+                  <td className="px-4 py-3 text-muted-foreground">{new Date(item.created_at).toLocaleString()}</td>
+                  <td className="px-4 py-3">
                     <div className="flex flex-wrap gap-1">
                       {(item.requested_study_ids || []).slice(0, 5).map((studyId) => (
                         <Badge key={`${item.id}-study-${studyId}`} variant="secondary">#{studyId}</Badge>
                       ))}
                     </div>
                   </td>
-                  <td className="px-3 py-2 text-muted-foreground">{item.fps || '—'}</td>
-                  <td className="px-3 py-2">
-                    <div className="flex justify-end gap-2">
+                  <td className="px-4 py-3 text-muted-foreground">{item.fps || '—'}</td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-col gap-1">
+                      <Badge variant={item.reading_status === 'completed' || item.reading_status === 'read' ? 'default' : 'secondary'}>
+                        {READING_STATUS_LABELS[item.reading_status || 'unassigned']}
+                      </Badge>
+                      {item.reading_status_updated_at && (
+                        <span className="text-xs text-muted-foreground">
+                          {new Date(item.reading_status_updated_at).toLocaleString()}
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {canAssignStreams ? (
+                      <div className="flex min-w-[330px] items-center gap-2">
+                        <select
+                          value={
+                            assignmentDrafts[item.id] ??
+                            item.assigned_md_email ??
+                            (item.assigned_md_name === DEFAULT_ASSIGNED_MD_NAME ? DEFAULT_ASSIGNED_MD_VALUE : '')
+                          }
+                          onChange={(event) => setAssignmentDrafts((prev) => ({ ...prev, [item.id]: event.target.value }))}
+                          className="h-10 min-w-0 flex-1 rounded-md border border-input bg-background px-3 text-base preserve-case"
+                          aria-label={`Assign ${item.name} to MD`}
+                        >
+                          <option value="">Unassigned</option>
+                          <option value={DEFAULT_ASSIGNED_MD_VALUE}>{DEFAULT_ASSIGNED_MD_NAME} (default)</option>
+                          {item.assigned_md_name &&
+                            item.assigned_md_name !== DEFAULT_ASSIGNED_MD_NAME &&
+                            !item.assigned_md_email && (
+                              <option value={`__name__:${item.assigned_md_name}`}>
+                                {item.assigned_md_name}
+                              </option>
+                            )}
+                          {doctorOptions.map((doctor) => (
+                            <option key={doctor.email} value={doctor.email}>
+                              {doctor.name} ({doctor.email})
+                            </option>
+                          ))}
+                        </select>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          disabled={savingAssignmentId === item.id}
+                          onClick={() => saveAssignment(item)}
+                        >
+                          <UserCheck className="mr-1 h-4 w-4" />
+                          {savingAssignmentId === item.id ? 'Saving...' : 'Assign'}
+                        </Button>
+                      </div>
+                    ) : (
+                      <div className="text-muted-foreground preserve-case">
+                        {item.assigned_md_name || item.assigned_md_email || 'Unassigned'}
+                      </div>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex flex-wrap justify-end gap-2">
                       <Button
-                        size="sm"
                         variant="outline"
                         disabled={loadingActionId === `${item.id}:play`}
-                        onClick={() => playStream(item)}
+                        onClick={() => openScrubPlayer(item)}
                       >
                         {repairingStreamId === item.id
                           ? 'Rebuilding...'
                           : loadingActionId === `${item.id}:play`
                             ? 'Loading...'
+                            : activeStreamId === item.id && videoUrl && !presentingCases
+                              ? 'Open Player'
                             : item.video_available
                               ? 'Play'
                               : 'Repair & Play'}
                       </Button>
                       <Button
-                        size="sm"
                         variant="outline"
                         disabled={item.presentation_case_count === 0 || loadingActionId === `${item.id}:present`}
                         onClick={() => playStream(item, { presentCases: true })}
@@ -572,15 +826,34 @@ export default function Streams() {
                           ? 'Rebuilding...'
                           : loadingActionId === `${item.id}:present`
                             ? 'Preparing...'
-                            : item.video_available
+                          : item.video_available
                               ? 'Present Cases'
                               : 'Repair & Present'}
                       </Button>
-                      <Button size="sm" variant="outline" asChild>
+                      <Button variant="outline" asChild>
                         <Link to="/studies">Open Studies</Link>
                       </Button>
-                      {studyApiAuth && (
-                        <Button size="sm" variant="destructive" onClick={() => removeStream(item)}>Remove</Button>
+                      {item.assigned_md_email && (
+                        <select
+                          value={item.reading_status || 'assigned'}
+                          onChange={(event) =>
+                            updateReadingStatus(
+                              item,
+                              event.target.value as Exclude<CaseStreamLibraryItem['reading_status'], 'unassigned' | undefined>
+                            )
+                          }
+                          disabled={savingStatusId === item.id}
+                          className="h-10 rounded-md border border-input bg-background px-3 text-base"
+                          aria-label={`Reading status for ${item.name}`}
+                        >
+                          <option value="assigned">Assigned</option>
+                          <option value="in_review">In Review</option>
+                          <option value="read">Read</option>
+                          <option value="completed">Completed</option>
+                        </select>
+                      )}
+                      {canAssignStreams && (
+                        <Button variant="destructive" onClick={() => removeStream(item)}>Remove</Button>
                       )}
                     </div>
                   </td>
@@ -588,40 +861,74 @@ export default function Streams() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
-      {videoUrl && activeItem && (
-        <div className="space-y-2 rounded-lg border p-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm font-medium preserve-case">
-              {presentingCases ? 'Presenting Cases' : 'Now Playing'}: {activeItem.name}
+      {/* ── Play mode: dialog player ── */}
+      {videoUrl && activeItem && !presentingCases && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3">
+            <div className="min-w-0">
+              <div className="text-sm font-medium preserve-case">Loaded: {activeItem.name}</div>
+              <div className="text-xs text-muted-foreground">
+                {activeStreamTotalFrames > 0
+                  ? `${activeStreamTotalFrames.toLocaleString()} frames · ${activeStreamFps.toFixed(2)} fps`
+                  : `${activeStreamFps.toFixed(2)} fps`}
+              </div>
             </div>
-            {presentingCases && activeCaseSegment && (
+            <Button type="button" size="sm" onClick={() => setScrubPlayerOpen(true)}>
+              Open Player
+            </Button>
+          </div>
+          <FrameScrubPlayerDialog
+            open={scrubPlayerOpen}
+            onOpenChange={setScrubPlayerOpen}
+            title={activeItem.name}
+            videoUrl={videoUrl}
+            fps={activeStreamFps}
+            totalFrames={activeStreamTotalFrames}
+            segments={frameReviewSegments}
+            playbackRate={playbackRate}
+            onPlaybackRateChange={setPlaybackRate}
+            getFrameUrl={getActiveFrameUrl}
+            prewarmFrames={prewarmActiveFrames}
+          />
+        </>
+      )}
+
+      {/* ── Present Cases mode: inline player + clinical panel ── */}
+      {videoUrl && activeItem && presentingCases && (
+        <div className="space-y-3 rounded-lg border overflow-hidden">
+          {/* Header */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3 pt-3">
+            <div className="text-sm font-medium preserve-case">
+              Presenting Cases: {activeItem.name}
+            </div>
+            {activeCaseSegment && (
               <Badge variant="secondary">
                 Case {activeCaseIndex + 1} of {caseSegments.length}
               </Badge>
             )}
           </div>
-          <video
-            key={videoUrl}
-            src={videoUrl}
-            controls
-            preload="metadata"
-            ref={videoRef}
-            className="w-full rounded-md bg-black"
-            onLoadedMetadata={(event) => {
-              event.currentTarget.playbackRate = playbackRate;
-              if (activeCaseSegment) {
-                event.currentTarget.currentTime = activeCaseSegment.startSec;
-                event.currentTarget.play().catch(() => {});
-              }
-            }}
-            onTimeUpdate={(event) => loopActiveCaseSegment(event.currentTarget)}
-            onEnded={(event) => loopActiveCaseSegment(event.currentTarget)}
-            onError={() => toast.error('This stream could not be decoded by the browser.')}
+
+          {/* New custom player */}
+          <CaseStreamPlayer
+            videoUrl={videoUrl}
+            fps={activeStreamFps}
+            totalFrames={activeStreamTotalFrames}
+            segments={frameReviewSegments}
+            playbackRate={playbackRate}
+            onPlaybackRateChange={setPlaybackRate}
+            activeSegmentIndex={activeCaseIndex}
+            loopActiveSegment={false}
+            onSegmentNavigate={seekToCaseIndex}
+            getFrameUrl={getActiveFrameUrl}
+            prewarmFrames={prewarmActiveFrames}
           />
-          {presentingCases && activeCaseSegment && (
+
+          {/* Case navigation + clinical panel */}
+          {activeCaseSegment && (
             <div className="space-y-3 rounded-md bg-muted/40 px-3 py-3 text-sm">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
@@ -793,23 +1100,6 @@ export default function Streams() {
               </div>
             </div>
           )}
-          <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="text-muted-foreground">Speed:</span>
-            {[0.1, 0.25, 0.5, 1, 1.5, 2].map((rate) => (
-              <Button
-                key={`stream-rate-${rate}`}
-                type="button"
-                size="sm"
-                variant={playbackRate === rate ? 'default' : 'outline'}
-                onClick={() => {
-                  setPlaybackRate(rate);
-                  if (videoRef.current) videoRef.current.playbackRate = rate;
-                }}
-              >
-                {rate}x
-              </Button>
-            ))}
-          </div>
         </div>
       )}
       {!videoUrl && presentationStatus && (

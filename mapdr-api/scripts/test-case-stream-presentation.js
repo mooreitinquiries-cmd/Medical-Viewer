@@ -18,6 +18,9 @@ assert.deepStrictEqual(cases, [
     start_sec: 0,
     end_sec: 6,
     duration_sec: 6,
+    frame_count: 90,
+    start_frame: 0,
+    end_frame: 90,
   },
   {
     index: 1,
@@ -26,6 +29,9 @@ assert.deepStrictEqual(cases, [
     start_sec: 6,
     end_sec: 9,
     duration_sec: 3,
+    frame_count: 45,
+    start_frame: 90,
+    end_frame: 135,
   },
 ]);
 
@@ -57,6 +63,7 @@ const manifest = buildCaseStreamPresentationManifest(
 assert.strictEqual(manifest.stream_id, 'stream-1');
 assert.strictEqual(manifest.job_id, 'job-1');
 assert.strictEqual(manifest.fps, 24);
+assert.strictEqual(manifest.total_frames, 0);
 assert.strictEqual(manifest.case_count, 2);
 assert.strictEqual(manifest.video_url, '/api/case-stream/jobs/job-1/download');
 

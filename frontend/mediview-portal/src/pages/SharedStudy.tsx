@@ -2,27 +2,68 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, FileImage, Calendar, User, Hash, FileText } from 'lucide-react';
+import { ExternalLink, FileImage, Calendar, User, Hash, FileText, CheckCircle2 } from 'lucide-react';
 import { fetchSharedStudy, getMediaBaseUrl } from '@/lib/api';
 import { toast } from 'sonner';
+import { VideoScrubPreviewPlayer } from '@/components/VideoScrubPreviewPlayer';
 
 interface SharedStudyRecord {
   patient_name?: string;
   patient_id?: string;
+  patient_dob?: string;
+  patient_age?: string;
+  patient_sex?: string;
+  patient_zip?: string;
   study_date?: string;
+  client_name?: string;
+  subclient?: string;
   modality?: string;
   dicom_count?: number;
   status?: string;
   notes?: string;
   pdf_url?: string;
   mp4_url?: string;
+  video_processing_status?: string | null;
+  video_processing_error?: string | null;
+  video_metadata?: {
+    duration?: number;
+    fps?: number;
+    thumbnail_interval_sec?: number;
+    thumbnail_paths?: string[];
+    playback_strategy?: string;
+    hls?: {
+      master_playlist?: string;
+      segment_duration?: number;
+      variants?: Array<{
+        name: string;
+        height: number;
+        width?: number | null;
+        bandwidth?: number;
+        playlist?: string;
+      }>;
+    } | null;
+  } | null;
 }
 
 export default function SharedStudy() {
   const { token } = useParams();
   const [study, setStudy] = useState<SharedStudyRecord | null>(null);
   const [loading, setLoading] = useState(true);
+  const [stableVideo, setStableVideo] = useState<{
+    url: string;
+    metadata: SharedStudyRecord['video_metadata'];
+  } | null>(null);
   const mediaBase = getMediaBaseUrl();
+
+  // Keep the player mounted on the last-known-good video so a background
+  // re-upload/reprocess on this study never stops or pauses active playback.
+  useEffect(() => {
+    if (study?.mp4_url && study.video_processing_status !== 'processing') {
+      setStableVideo((prev) =>
+        prev && prev.url === study.mp4_url ? prev : { url: study.mp4_url as string, metadata: study.video_metadata }
+      );
+    }
+  }, [study?.mp4_url, study?.video_processing_status, study?.video_metadata]);
   const resolveStudyMediaUrl = (rawUrl?: string | null) => {
     const value = String(rawUrl || '').trim();
     if (!value) return '';
@@ -82,6 +123,10 @@ export default function SharedStudy() {
             { icon: User, label: 'Patient', value: study.patient_name },
             { icon: Hash, label: 'Patient ID', value: study.patient_id },
             { icon: Calendar, label: 'Study Date', value: study.study_date },
+            { icon: User, label: 'Client', value: study.client_name },
+            { icon: Hash, label: 'Subclient', value: study.subclient },
+            { icon: Calendar, label: 'DOB / Age', value: [study.patient_dob, study.patient_age].filter(Boolean).join(' / ') },
+            { icon: User, label: 'Sex / Zip', value: [study.patient_sex, study.patient_zip].filter(Boolean).join(' / ') },
             { icon: FileImage, label: 'DICOM Files', value: String(study.dicom_count || 0) },
           ].map((item) => (
             <div key={item.label} className="rounded-xl border bg-card p-4 shadow-sm">
@@ -99,6 +144,7 @@ export default function SharedStudy() {
             {study.modality}
           </Badge>
           <span className="inline-flex items-center rounded-full bg-[hsl(var(--success))]/10 px-2.5 py-0.5 text-xs font-medium text-[hsl(var(--success))]">
+            {String(study.status || '').toLowerCase() === 'complete' && <CheckCircle2 className="mr-1 h-3.5 w-3.5" />}
             {study.status || 'ready'}
           </span>
         </div>
@@ -141,15 +187,39 @@ export default function SharedStudy() {
           </div>
         )}
 
-        {study.mp4_url && (
+        {study.video_processing_status === 'processing' && !stableVideo && (
+          <div className="rounded-xl border bg-card p-6 text-sm text-muted-foreground shadow-sm">
+            Video is processing. Playback will be available when optimization finishes.
+          </div>
+        )}
+
+        {study.video_processing_status === 'failed' && !stableVideo && (
+          <div className="rounded-xl border border-destructive/30 bg-destructive/10 p-6 text-sm text-destructive shadow-sm">
+            Video processing failed{study.video_processing_error ? `: ${study.video_processing_error}` : '.'}
+          </div>
+        )}
+
+        {stableVideo && (
           <div className="rounded-xl border bg-card p-6 shadow-sm">
             <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               Study Video
             </h2>
+            {study.video_processing_status === 'processing' && (
+              <div className="mb-3 rounded-md border bg-muted/30 px-3 py-1.5 text-xs text-muted-foreground">
+                A newer version is processing in the background — playback below is uninterrupted.
+              </div>
+            )}
+            {study.video_processing_status === 'failed' && (
+              <div className="mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive">
+                Reprocessing failed{study.video_processing_error ? `: ${study.video_processing_error}` : '.'} Showing the last working version.
+              </div>
+            )}
             <div className="overflow-hidden rounded-lg bg-foreground/5">
-              <video controls className="w-full" src={resolveStudyMediaUrl(study.mp4_url)}>
-                Your browser does not support video playback.
-              </video>
+              <VideoScrubPreviewPlayer
+                src={resolveStudyMediaUrl(stableVideo.url)}
+                metadata={stableVideo.metadata}
+                resolveMediaUrl={resolveStudyMediaUrl}
+              />
             </div>
           </div>
         )}

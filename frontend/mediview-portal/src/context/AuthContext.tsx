@@ -5,17 +5,43 @@ import type { AccountRole } from '@/lib/auth';
 import {
   changeSessionPassword,
   createUserAccount,
+  getMyWhiteLabelAccount,
   getSession,
+  isAuthSessionError,
   listUsers,
   resetUserAccountPassword,
   signInWithSession,
   signOutOfSession,
   updateUserAccountStatus,
+  verifyTwoFactorLogin,
+  type WhiteLabelAccount,
 } from '@/lib/sessionApi';
+import {
+  canUseAnyWhiteLabelFeature,
+  canUseWhiteLabelPermission,
+  canUseWhiteLabelFeature,
+  getWhiteLabelAccessLevel,
+  type WhiteLabelPermission,
+  type WhiteLabelFeature,
+} from '@/lib/whiteLabelEntitlements';
+import type { StudyApiAuthContext } from '@/lib/api';
 
 interface SignInPayload {
   email: string;
   password: string;
+}
+
+interface TwoFactorSignInPayload {
+  email: string;
+  challengeId: string;
+  code: string;
+}
+
+interface TwoFactorRequiredResult {
+  challengeId: string;
+  expiresAt: string;
+  method: string;
+  email: string;
 }
 
 interface CreateUserPayload {
@@ -47,7 +73,18 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isLoading: boolean;
   users: AuthUser[];
-  signIn: (payload: SignInPayload) => Promise<{ ok: boolean; error?: string; user?: AuthUser }>;
+  whiteLabelAccount: WhiteLabelAccount | null;
+  whiteLabelAccessLevel: string | null;
+  studyApiAuth: StudyApiAuthContext | undefined;
+  hasFeature: (feature: WhiteLabelFeature) => boolean;
+  hasAnyFeature: (features: WhiteLabelFeature[]) => boolean;
+  hasPermission: (permission: WhiteLabelPermission) => boolean;
+  signIn: (
+    payload: SignInPayload
+  ) => Promise<{ ok: boolean; error?: string; user?: AuthUser; twoFactorRequired?: TwoFactorRequiredResult }>;
+  verifyTwoFactorSignIn: (
+    payload: TwoFactorSignInPayload
+  ) => Promise<{ ok: boolean; error?: string; user?: AuthUser }>;
   signOut: () => Promise<void>;
   refreshUsers: () => Promise<void>;
   createUser: (
@@ -65,11 +102,29 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
-
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [users, setUsers] = useState<AuthUser[]>([]);
+  const [whiteLabelAccount, setWhiteLabelAccount] = useState<WhiteLabelAccount | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+
+  const loadWhiteLabelAccount = async (nextUser: AuthUser | null) => {
+    if (!nextUser) {
+      setWhiteLabelAccount(null);
+      return;
+    }
+
+    try {
+      const result = await getMyWhiteLabelAccount();
+      setWhiteLabelAccount(result.account);
+    } catch (error) {
+      if (isAuthSessionError(error)) {
+        setWhiteLabelAccount(null);
+        throw error;
+      }
+      setWhiteLabelAccount(null);
+    }
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -79,6 +134,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const session = await getSession();
         if (!isMounted) return;
         setUser(session.user);
+        await loadWhiteLabelAccount(session.user);
+        if (!isMounted) return;
 
         if (session.user.role === 'admin') {
           const allUsers = await listUsers();
@@ -91,6 +148,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (!isMounted) return;
         setUser(null);
         setUsers([]);
+        setWhiteLabelAccount(null);
       } finally {
         if (isMounted) {
           setIsLoading(false);
@@ -106,6 +164,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthContextValue>(() => {
+    const whiteLabelAccessLevel = getWhiteLabelAccessLevel(user, whiteLabelAccount);
+    const studyApiAuth = user
+      ? {
+          email: user.email,
+          role: user.role,
+          name: user.name,
+          isSuperAdmin: user.isSuperAdmin,
+          whiteLabelAccountIds: user.whiteLabelAccountIds,
+          primaryWhiteLabelAccountId: user.primaryWhiteLabelAccountId,
+          whiteLabelAccessLevel,
+        }
+      : undefined;
+    const clearExpiredSession = (error: unknown) => {
+      if (!isAuthSessionError(error)) return;
+      setUser(null);
+      setUsers([]);
+      setWhiteLabelAccount(null);
+    };
+
     const refreshUsers = async () => {
       if (!user || user.role !== 'admin') {
         setUsers([]);
@@ -124,7 +201,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       signIn: async ({ email, password }) => {
         try {
           const session = await signInWithSession({ email, password });
+          if ('twoFactorRequired' in session && session.twoFactorRequired) {
+            return {
+              ok: true,
+              twoFactorRequired: {
+                challengeId: session.challengeId,
+                expiresAt: session.expiresAt,
+                method: session.method,
+                email: session.email,
+              },
+            };
+          }
           setUser(session.user);
+          await loadWhiteLabelAccount(session.user);
 
           if (session.user.role === 'admin') {
             const allUsers = await listUsers();
@@ -135,9 +224,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
           return { ok: true, user: session.user };
         } catch (error) {
+          clearExpiredSession(error);
           return {
             ok: false,
             error: error instanceof Error ? error.message : 'Sign in failed',
+          };
+        }
+      },
+      verifyTwoFactorSignIn: async ({ email, challengeId, code }) => {
+        try {
+          const session = await verifyTwoFactorLogin({ email, challengeId, code });
+          setUser(session.user);
+          await loadWhiteLabelAccount(session.user);
+
+          if (session.user.role === 'admin') {
+            const allUsers = await listUsers();
+            setUsers(allUsers.users);
+          } else {
+            setUsers([]);
+          }
+
+          return { ok: true, user: session.user };
+        } catch (error) {
+          clearExpiredSession(error);
+          return {
+            ok: false,
+            error: error instanceof Error ? error.message : 'Could not verify code',
           };
         }
       },
@@ -145,6 +257,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         await signOutOfSession().catch(() => undefined);
         setUser(null);
         setUsers([]);
+        setWhiteLabelAccount(null);
       },
       refreshUsers,
       createUser: async (payload) => {
@@ -153,6 +266,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await refreshUsers();
           return { ok: true, twoFactorSetup: response.twoFactorSetup };
         } catch (error) {
+          clearExpiredSession(error);
           return {
             ok: false,
             error: error instanceof Error ? error.message : 'Could not create user',
@@ -170,6 +284,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
           return { ok: true };
         } catch (error) {
+          clearExpiredSession(error);
           return {
             ok: false,
             error: error instanceof Error ? error.message : 'Could not update account status',
@@ -182,6 +297,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await refreshUsers();
           return { ok: true };
         } catch (error) {
+          clearExpiredSession(error);
           return {
             ok: false,
             error: error instanceof Error ? error.message : 'Could not reset password',
@@ -193,14 +309,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           await changeSessionPassword(payload);
           return { ok: true };
         } catch (error) {
+          clearExpiredSession(error);
           return {
             ok: false,
             error: error instanceof Error ? error.message : 'Could not update password',
           };
         }
       },
+      whiteLabelAccount,
+      whiteLabelAccessLevel,
+      studyApiAuth,
+      hasFeature: (feature) => canUseWhiteLabelFeature(user, whiteLabelAccount, feature),
+      hasAnyFeature: (features) => canUseAnyWhiteLabelFeature(user, whiteLabelAccount, features),
+      hasPermission: (permission) => canUseWhiteLabelPermission(user, whiteLabelAccount, permission),
     };
-  }, [isLoading, user, users]);
+  }, [isLoading, user, users, whiteLabelAccount]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

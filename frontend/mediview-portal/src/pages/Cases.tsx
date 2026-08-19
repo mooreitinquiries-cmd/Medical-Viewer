@@ -2,15 +2,18 @@ import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { FileText, MessageCircle, PlayCircle } from 'lucide-react';
+import { Cloud, FileText, MessageCircle, PlayCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { listCareCases, updateCareCaseStatus, type CareCase } from '@/lib/careApi';
 import { getMediaBaseUrl, listCaseRecordings, type CaseRecording } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { getVisibleErrorMessage } from '@/lib/sessionApi';
+
+const CALL_APP_URL = 'https://call.octelerad.com';
 
 export default function Cases() {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, hasFeature } = useAuth();
   const [cases, setCases] = useState<CareCase[]>([]);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -33,7 +36,8 @@ export default function Cases() {
         setCases(nextCases);
         setActiveCaseId(nextCases[0]?.id || null);
       } catch (error) {
-        toast.error(error instanceof Error ? error.message : 'Failed to load cases');
+        const message = getVisibleErrorMessage(error, 'Failed to load cases');
+        if (message) toast.error(message);
       } finally {
         setLoading(false);
       }
@@ -54,6 +58,16 @@ export default function Cases() {
     () => (activeCase?.studyStack || []).filter((entry) => entry.relation !== 'current'),
     [activeCase]
   );
+  const activeSoapEntries = useMemo(() => {
+    const soap = activeCase?.soapNotes;
+    if (!soap) return [];
+    return [
+      ['Subjective', soap.subjective],
+      ['Objective', soap.objective],
+      ['Assessment', soap.assessment],
+      ['Plan', soap.plan],
+    ] as Array<[string, string | undefined]>;
+  }, [activeCase]);
   const activeCaseStudyIds = useMemo(() => {
     if (!activeCase?.studyStack?.length) return [];
     return Array.from(
@@ -97,7 +111,8 @@ export default function Cases() {
       } catch (error) {
         if (cancelled) return;
         setCaseRecordings([]);
-        toast.error(error instanceof Error ? error.message : 'Failed to load case recordings');
+        const message = getVisibleErrorMessage(error, 'Failed to load case recordings');
+        if (message) toast.error(message);
       } finally {
         if (!cancelled) setLoadingRecordings(false);
       }
@@ -117,7 +132,8 @@ export default function Cases() {
       setCases((prev) => prev.map((entry) => (entry.id === response.case.id ? response.case : entry)));
       toast.success('Case marked as reviewed');
     } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to update case');
+      const message = getVisibleErrorMessage(error, 'Failed to update case');
+      if (message) toast.error(message);
     }
   };
 
@@ -189,9 +205,75 @@ export default function Cases() {
                   <p className="text-sm text-muted-foreground preserve-case">{activeCase.notes}</p>
                 </div>
 
+                {activeSoapEntries.length > 0 && (
+                  <div className="rounded-lg border p-4">
+                    <div className="mb-3 flex items-center gap-2 text-sm font-medium">
+                      <FileText className="h-4 w-4" />
+                      SOAP Clinical Note
+                    </div>
+                    <div className="rounded-md border bg-background p-4">
+                      <div className="border-2 border-foreground px-3 py-2 text-center text-sm font-semibold tracking-wide">
+                        SUBJECTIVE OBJECTIVE ASSESSMENT PLAN - STUDY NOTES
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 border-l border-t text-xs">
+                        <div className="border-b border-r p-2 preserve-case">
+                          <div className="font-semibold uppercase text-muted-foreground">Patient</div>
+                          <div className="mt-0.5">{activeCase.patientName || 'Patient'}</div>
+                        </div>
+                        <div className="border-b border-r p-2 preserve-case">
+                          <div className="font-semibold uppercase text-muted-foreground">Case title</div>
+                          <div className="mt-0.5">{activeCase.title}</div>
+                        </div>
+                        <div className="border-b border-r p-2 preserve-case">
+                          <div className="font-semibold uppercase text-muted-foreground">Shared by</div>
+                          <div className="mt-0.5">{activeCase.doctorName}</div>
+                        </div>
+                        <div className="border-b border-r p-2 preserve-case">
+                          <div className="font-semibold uppercase text-muted-foreground">Shared at</div>
+                          <div className="mt-0.5">{new Date(activeCase.createdAt).toLocaleString()}</div>
+                        </div>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                      {activeSoapEntries.map(([label, value]) => (
+                        <div key={label} className="border">
+                          <div className="border-b bg-muted/40 px-3 py-2 text-xs font-semibold uppercase tracking-wide">
+                            {label}
+                          </div>
+                          <p className="min-h-20 whitespace-pre-wrap p-3 text-sm preserve-case">
+                            {String(value || '').trim() || 'Not entered'}
+                          </p>
+                        </div>
+                      ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 <div className="text-xs text-muted-foreground">
                   Updated: {new Date(activeCase.updatedAt).toLocaleString()}
                 </div>
+
+                {activeCase.nextcloudShare?.url && (
+                  <div className="rounded-lg border p-3">
+                    <div className="mb-2 flex items-center gap-2 text-sm font-medium">
+                      <Cloud className="h-4 w-4" />
+                      Case Package
+                    </div>
+                    <a
+                      href={activeCase.nextcloudShare.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="block truncate text-sm text-primary underline-offset-2 hover:underline preserve-case"
+                    >
+                      {activeCase.nextcloudShare.url}
+                    </a>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      {activeCase.nextcloudShare.studyCount || 0} studies ·{' '}
+                      {activeCase.nextcloudShare.reportCount || 0} reports ·{' '}
+                      {activeCase.nextcloudShare.dicomExported || 0} DICOM files
+                    </div>
+                  </div>
+                )}
 
                 {!!activeCase.studyStack?.length && (
                   <div className="space-y-3">
@@ -270,10 +352,34 @@ export default function Cases() {
                 </div>
 
                 <div className="flex flex-wrap gap-2">
-                  <Button onClick={() => navigate(`/video?target=${encodeURIComponent(activeCase.doctorName)}`)}>
-                    <PlayCircle className="mr-2 h-4 w-4" />
-                    Join Video Follow-up
-                  </Button>
+                  {user && user.role !== 'patient' && (
+                    <>
+                      {hasFeature('reportGeneration') && (
+                        <Button
+                          variant="outline"
+                          onClick={() => navigate(`/reports/new?type=report&caseId=${encodeURIComponent(activeCase.id)}`)}
+                        >
+                          <FileText className="mr-2 h-4 w-4" />
+                          Create Report
+                        </Button>
+                      )}
+                      {hasFeature('soapNotes') && (
+                        <Button
+                          variant="outline"
+                          onClick={() => navigate(`/reports/new?type=soap&caseId=${encodeURIComponent(activeCase.id)}`)}
+                        >
+                          <FileText className="mr-2 h-4 w-4" />
+                          Create SOAP Note
+                        </Button>
+                      )}
+                    </>
+                  )}
+                  {hasFeature('videoConsults') && (
+                    <Button onClick={() => window.open(CALL_APP_URL, '_blank', 'noopener,noreferrer')}>
+                      <PlayCircle className="mr-2 h-4 w-4" />
+                      Join Video Follow-up
+                    </Button>
+                  )}
                   <Button
                     variant="outline"
                     onClick={() => navigate(`/messages?contact=${encodeURIComponent(activeCase.doctorEmail)}`)}

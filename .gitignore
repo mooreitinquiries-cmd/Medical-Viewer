@@ -14,10 +14,29 @@ mapdr-api/tmp/
 mapdr-api/uploads/
 mapdr-api/media/
 mapdr-api/*.json
+*.jsonl
 !mapdr-api/package.json
 !mapdr-api/package-lock.json
 *.codex-backup*
 *.save
+*.before-*
+
+# Databases, dumps, archives, and PHI-bearing study files
+*.db
+*.sqlite
+*.sqlite3
+*.sql
+*.dump
+*.bak
+*.dcm
+*.dicom
+*.nii
+*.nii.gz
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.bundle
 
 # Auth service local database
 frontend/mediview-portal/server/auth-api/data/
@@ -44,3 +63,7 @@ __pycache__/
 # Machine-local SSH material
 .ssh
 .ssh.pub
+*.pem
+*.key
+*.crt
+*.p12

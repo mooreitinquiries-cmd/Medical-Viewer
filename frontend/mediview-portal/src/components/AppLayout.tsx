@@ -1,6 +1,8 @@
 import { Outlet } from 'react-router-dom';
 import AppSidebar from './AppSidebar';
 import { useAuth } from '@/context/AuthContext';
+import FloatingDictationWidget from './FloatingDictationWidget';
+import AcronymExpansionWatcher from './AcronymExpansionWatcher';
 
 export default function AppLayout() {
   const { user } = useAuth();
@@ -13,6 +15,12 @@ export default function AppLayout() {
           <Outlet />
         </div>
       </main>
+      {user && (
+        <>
+          <AcronymExpansionWatcher />
+          <FloatingDictationWidget />
+        </>
+      )}
     </div>
   );
 }

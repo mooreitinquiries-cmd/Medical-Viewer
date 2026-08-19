@@ -8,6 +8,10 @@ services:
       - 127.0.0.1:6379:6379
     volumes:
       - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 512M
 
   livekit:
     image: livekit/livekit-server:latest
@@ -20,6 +24,10 @@ services:
     volumes:
       - ./livekit.yaml:/etc/livekit/livekit.yaml:ro
       - ./certs:/etc/livekit/certs:ro
+    deploy:
+      resources:
+        limits:
+          memory: 1G
 
 volumes:
   redis-data:

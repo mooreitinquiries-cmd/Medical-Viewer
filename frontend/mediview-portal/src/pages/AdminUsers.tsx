@@ -14,11 +14,12 @@ import {
   validateUsername,
   type AccountRole,
 } from '@/lib/auth';
+import { showErrorToast } from '@/lib/errorToast';
 
 const QUICK_ACCESS_LINKS = [
   { to: '/dashboard', label: 'Open Dashboard', description: 'Study volume, modalities, and recent activity.' },
   { to: '/care-desk', label: 'Open Care Desk', description: 'Doctor-to-patient case handoff workspace.' },
-  { to: '/upload', label: 'Open Upload Study', description: 'Submit imaging studies into the portal.' },
+  { to: '/upload', label: 'Open New Case', description: 'Create a new case and submit imaging into the portal.' },
   { to: '/studies', label: 'Open Studies', description: 'Browse uploaded studies and drill into details.' },
   { to: '/cases', label: 'Open Patient Cases', description: 'Review the patient-facing case inbox.' },
   { to: '/messages', label: 'Open Messages', description: 'Access the messaging area.' },
@@ -77,7 +78,7 @@ export default function AdminUsers() {
     });
 
     if (!result.ok) {
-      toast.error(result.error || 'Could not create user');
+      showErrorToast(result.error, 'Could not create user');
       return;
     }
 
@@ -93,7 +94,7 @@ export default function AdminUsers() {
     const result = await updateUserStatus({ email: emailAddress, status: nextStatus });
 
     if (!result.ok) {
-      toast.error(result.error || 'Could not update account status');
+      showErrorToast(result.error, 'Could not update account status');
       return;
     }
 
@@ -112,7 +113,7 @@ export default function AdminUsers() {
     const result = await resetUserPassword({ email: emailAddress, nextPassword });
 
     if (!result.ok) {
-      toast.error(result.error || 'Could not reset password');
+      showErrorToast(result.error, 'Could not reset password');
       return;
     }
 
